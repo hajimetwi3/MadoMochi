@@ -10,7 +10,8 @@ Default target is the user-global ~/.claude/settings.json so the buddy reacts
 in every project. Use --project <dir> to target <dir>/.claude/settings.json
 instead, and --uninstall to remove every buddy hook while leaving the rest of
 the file untouched. Existing settings are preserved; a timestamped .bak is
-written first. Changes take effect from the next Claude Code session.
+written first. Claude Code watches its settings files, so changes normally
+apply to running sessions right away (open a new session if they don't).
 """
 
 from __future__ import annotations
@@ -119,7 +120,7 @@ def install(settings_path: Path) -> None:
 
     _save(settings_path, settings)
     print(f"installed buddy hooks -> {settings_path}")
-    print("hooks take effect from the NEXT Claude Code session")
+    print("hook changes usually apply to running sessions right away (new session if not)")
 
 
 def uninstall(settings_path: Path) -> None:
@@ -130,7 +131,7 @@ def uninstall(settings_path: Path) -> None:
     scrub_buddy_hooks(settings)
     _save(settings_path, settings)
     print(f"removed buddy hooks <- {settings_path}")
-    print("sessions that are already open keep their loaded hooks until they end")
+    print("removal usually applies to running sessions right away (restart them if hooks linger)")
 
 
 def main() -> int:

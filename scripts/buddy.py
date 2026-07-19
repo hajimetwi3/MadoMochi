@@ -12,7 +12,7 @@ MadoMochi — always-on-top floating pixel companion for Claude Code.
 - Alert rescue: a permission-wait neglected past roam_after_sec sends the
   buddy wandering across the whole screen until the state resolves
 - Skins: any scripts/skins/*.py matching the contract, right-click to switch
-- Settings dialog (right-click > 設定…): size / walk / premium / roam sliders
+- Settings dialog (right-click > Settings…): size / walk / premium / roam sliders
   with a factory-reset button, plus a 60/120/180s showcase demo that runs
   the whole repertoire with music (for recording GIFs)
 - Time-of-day: late-night dozing, one morning workout, longer Friday parties

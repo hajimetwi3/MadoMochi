@@ -38,6 +38,10 @@ Code hooks.
 | `WAITING` | attention notifications (`Notification`: permission prompt, idle prompt, agent-needs-input...) | urgent hops and waving. **Neglect it for a few minutes and the buddy roams your whole screen** until you deal with it, then hurries home |
 | `SLEEP` | session ended (`SessionEnd`) | sits down, zzz |
 
+Animation grammar: feelings are shown through **motion only** — leans,
+hops, crouches, eye movement — with confetti as the single environmental
+effect.
+
 Stuck-state safety net: if no hook event arrives for 5 minutes (30 minutes
 after long-running tools like Bash/Agent), WORKING falls back to idle.
 
@@ -52,6 +56,10 @@ after long-running tools like Bash/Agent), WORKING falls back to idle.
 
 Time-of-day: dozes off late at night (23:00–5:00), one morning workout
 (6:00–9:00), Friday DONE parties run twice as long.
+
+The right-click menu has one-click demos for walk / gym / soccer / roam —
+the roam demo tours the screen for about eight seconds and walks itself
+home.
 
 Animations use variable frame holds (fast base frames plus longer holds;
 jumps slow at the apex).
@@ -110,7 +118,12 @@ one with `-Lang en` / `-Lang ja`.
   [install.settings/settings.template.json](install.settings/settings.template.json)
   (`{{PYTHON}}` / `{{HOOK_ENTRY}}` placeholders resolved per machine)
 - The generated `.claude/settings.json` is machine-specific and untracked
-- Hooks take effect from the **next** Claude Code session
+- Hook wiring changes normally apply to **running sessions automatically**
+  (Claude Code watches its settings files); open a new session if they
+  don't seem to land (older versions)
+- A new session **auto-launches the buddy** (SessionStart hook); sending a
+  prompt revives a crashed one, while a deliberate quit is respected for
+  30 minutes
 
 ### Uninstall
 
@@ -123,7 +136,8 @@ folder). It dismisses the buddy and removes **only the buddy's wiring**
 from settings.json — other settings and other hooks are untouched, with an
 automatic backup. Scripted: `uninstall.ps1 -Global` / `-Project <dir>`;
 add `-PurgeData` to also delete `~/.claude/buddy` (settings, cache, logs).
-Sessions already open keep their loaded hooks until they end.
+Removal normally applies to running sessions right away too; restart a
+session if hooks seem to linger.
 
 ## Quick start
 
@@ -135,7 +149,11 @@ powershell -ExecutionPolicy Bypass -File scripts\stop_buddy.ps1    # dismiss
 The buddy follows the Claude Code window and hides when it is closed or
 minimized — or turn on **corner parking** (right-click) to have it squat
 in the bottom-right corner of the desktop instead (`park_when_hidden`).
-Size etc. live in the settings dialog (right-click → Settings…).
+Size etc. live in the settings dialog (right-click → Settings…), or via
+CLI: `python scripts\buddy.py --scale 3` (default 2.4; fractions are fine
+— rational-number scaling). Internally the sprite is a 64×64 fine grid:
+chunky 2-px body blocks, with 1-px details (whiskers, > < eyes)
+anti-aliased on top.
 
 ## Controls
 
@@ -183,7 +201,7 @@ costs nothing — the frame cache just rebuilds lazily).
 A skin module exports: `NAME`, `PALETTE`, `GRID`, `build_frame(mood, t)`,
 `frame_hold(mood, t)`, `POKE_SEQ`, `GYM_SEQ` (and optionally `SOCCER_SEQ`,
 plus `NAME_EN` for the English menu).
-Three patterns to copy from:
+Four patterns to copy from:
 
 - **palette swap** — [skins/neko_sakura.py](scripts/skins/neko_sakura.py) (a dozen lines)
 - **on the shared base** — [skins/penguin.py](scripts/skins/penguin.py):
@@ -202,10 +220,10 @@ A broken skin file is silently skipped; it can never take the buddy down.
 ## Testing
 
 ```powershell
-powershell -File scripts\stop_buddy.ps1
+powershell -ExecutionPolicy Bypass -File scripts\stop_buddy.ps1
 python tests\test_units.py          # regression suite (all features)
 python tests\soccer_strip.py out.png [mood] [skin]   # render sprite phases
-powershell -File scripts\start_buddy.ps1
+powershell -ExecutionPolicy Bypass -File scripts\start_buddy.ps1
 ```
 
 ## Manually set a mood (demo / debugging)
@@ -215,6 +233,34 @@ python scripts\set_status.py --mood happy
 python scripts\set_status.py --mood work --tool Bash
 ```
 
+## Files
+
+```
+MadoMochi/                  # repo root
+  README.md / README.ja.md  # this document (English / Japanese)
+  LICENSE                   # MIT license text
+  .gitignore                # ignores caches, PNG renders, generated files
+  .claude/settings.json     # hook wiring generated on install (untracked)
+  install.ps1               # interactive installer
+  uninstall.ps1             # interactive uninstaller (-PurgeData wipes data too)
+  install.settings/
+    settings.template.json  # canonical hook wiring (with placeholders)
+  scripts/
+    buddy.py                # the floating window itself (tkinter, transparent, topmost)
+    retro_bgm.py            # 12 built-in chiptune tracks + LED patterns (stdlib synth)
+    i18n.py                 # UI strings (EN/JA) and display-language detection
+    skins/                  # 13 skins + the shared base _base.py (drop a .py to add)
+    window_pos.py           # Claude-window detection & anchoring (pure ctypes)
+    hook_entry.py           # hook entrypoint (stdin JSON -> status.json, always exit 0)
+    set_status.py           # set the mood manually
+    install_hooks.py        # wires the template into settings.json
+    start_buddy.ps1 / stop_buddy.ps1
+  tests/
+    test_units.py           # regression suite (run with the buddy stopped)
+    soccer_strip.py         # render sprite phases to PNG
+    capture.ps1             # DPI-aware screen capture (-CropX/-CropY/-CropW/-CropH/-Zoom)
+```
+
 Runtime files live in `~/.claude/buddy/`: `status.json` (current mood),
 `config.json` (position & settings), `hook.log` (every hook event),
 `buddy_err.log` (render-loop errors, rotated at 1MB), `bgm_cache/`
@@ -222,11 +268,13 @@ Runtime files live in `~/.claude/buddy/`: `status.json` (current mood),
 
 ## Troubleshooting
 
-- **Not reacting to the session** → start a new Claude Code session (hooks
-  are loaded at session start). `Get-Content $HOME\.claude\buddy\hook.log -Tail 20`
-  growing means hooks fire; if the buddy still doesn't change, restart it.
+- **Not reacting to the session** →
+  `Get-Content $HOME\.claude\buddy\hook.log -Tail 20` growing means hooks
+  fire; if the buddy still doesn't change, restart it. If nothing grows,
+  re-run the installer or open a new session.
 - **Buddy not visible** → it hides while the Claude window is minimized.
-  Right-click → follow OFF pins it on screen permanently.
+  Right-click → follow OFF pins it on screen permanently, or turn on
+  corner parking to have it wait on the desktop instead.
 - **Closed the buddy?** → it auto-revives on your next prompt (crash
   self-healing). A deliberate quit (Esc / menu / stop_buddy.ps1) is
   respected for 30 minutes — a new session or start_buddy.ps1 brings it
@@ -243,6 +291,7 @@ Runtime files live in `~/.claude/buddy/`: `status.json` (current mood),
 - **Mascot IP note**: this repository ships only original characters. The
   engine is mascot-agnostic — if you skin it as someone else's mascot for
   fun, keep that skin local and don't redistribute it.
+- Not a productivity tool — a **cute companion** 🐱
 - License: [MIT](LICENSE)
 
 ## Disclaimer

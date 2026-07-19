@@ -301,5 +301,5 @@ Use at your own risk. Backing up your files is your responsibility.
 
 ## Author
 
-[Hajime Tsui](https://hajimetwi3.github.io/hajimetwi3/)
-X (Twitter): https://x.com/hajimetwi3
+[Hajime Tsui](https://hajimetwi3.github.io/hajimetwi3/)  
+X (Twitter): https://x.com/hajimetwi3  

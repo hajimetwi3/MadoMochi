@@ -14,7 +14,7 @@ Code hooks.
 > frameless, chroma-key-transparent, always-on-top window that tracks the
 > Claude Code window and reads a status file written by hooks.
 
-<video src="./assets/demo.mp4" width="100%" autoplay loop muted playsinline></video>  
+[▶ Watch the MadoMochi demo video](https://x.com/hajimetwi3/status/2078704325292179829)
 
 ## Requirements
 

@@ -14,6 +14,8 @@ Code hooks.
 > frameless, chroma-key-transparent, always-on-top window that tracks the
 > Claude Code window and reads a status file written by hooks.
 
+<video src="./assets/demo.mp4" width="100%" autoplay loop muted playsinline></video>  
+
 ## Requirements
 
 - **Windows 11** (window tracking & transparency use Win32 APIs; Windows 10

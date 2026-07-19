@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+backup-*/
+# sprite-strip renders and screen captures (screens can hold secrets)
+*.png
+# machine-specific generated settings (+ .bak files);
+# regenerate with: python scripts/install_hooks.py --project .  (or install.ps1)
+.claude/

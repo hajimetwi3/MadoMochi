@@ -285,6 +285,6 @@ MadoMochi/                  # リポジトリ直下
 
 ## 作者
 
-[Hajime Tsui](https://hajimetwi3.github.io/hajimetwi3/)
-X (Twitter): https://x.com/hajimetwi3
+[Hajime Tsui](https://hajimetwi3.github.io/hajimetwi3/)  
+X (Twitter): https://x.com/hajimetwi3  
 

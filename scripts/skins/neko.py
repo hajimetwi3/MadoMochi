@@ -2,9 +2,10 @@
 Neko — a chibi sitting pixel cat in teal. The mascot-agnostic default skin.
 
 Original silhouette: a two-mass build — round head on a smaller body,
-sitting upright — with triangle ears, close-set round eyes with a glint,
-fine-grid whiskers, a pink nose, front paws and a wagging tail. Raised paws
-do maneki-neko duty for the waving / typing / lifting poses.
+sitting upright — with triangle ears, close-set solid round eyes (house
+style: no glint), fine-grid whiskers, a pink nose, front paws and a
+wagging tail. Raised paws do maneki-neko duty for the waving / typing /
+lifting poses.
 
 Fully standalone (no other skin imported) so it can ship on its own.
 """
@@ -21,7 +22,7 @@ PALETTE = [
     "#1f7a6d",  # 3 dark teal
     "#2f9686",  # 4 shade teal (whiskers, paws)
     "#1c2528",  # 5 eyes dark
-    "#ffffff",  # 6 white (glint)
+    "#ffffff",  # 6 white (soccer ball / effects)
     "#fbbf24",  # 7 gold spark
     "#38bdf8",  # 8 cyan (sweat / zzz)
     "#1e293b",  # 9 terminal dark
@@ -36,7 +37,8 @@ PALETTE = [
 
 Buf = List[List[int]]
 
-NAME = "Neko"
+NAME = "ネコ"
+NAME_EN = "Neko"
 
 GRID = 64
 
@@ -203,7 +205,7 @@ def draw_neko(
     paw("l", paw_l)
     paw("r", paw_r)
 
-    # --- eyes (close-set round eyes with a glint) ---
+    # --- eyes (close-set, solid — house style: no glint) ---
     for ex in EYE_XS:
         x = ex + look_x
         y = EYE_Y0 + oy + look_y

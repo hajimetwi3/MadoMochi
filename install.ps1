@@ -39,7 +39,7 @@ $S = @{
         not_found  = "Folder not found: {0}"
         cancelled  = "Cancelled"
         ask_launch = "Launch the buddy now? (Y/n)"
-        done       = "Setup complete. Hooks take effect from the next Claude Code session"
+        done       = "Setup complete. Hooks usually take effect right away (open a new session if not)"
     }
     ja = @{
         no_python  = "python が見つかりません。Python 3.10+ をインストールしてから再実行してください。"
@@ -52,7 +52,7 @@ $S = @{
         not_found  = "フォルダが見つかりません: {0}"
         cancelled  = "中止しました"
         ask_launch = "今すぐバディを起動しますか？ (Y/n)"
-        done       = "セットアップ完了。フックは新しい Claude Code セッションから有効になります"
+        done       = "セットアップ完了。フックは通常すぐ有効になります（反映されない場合は新しいセッションで）"
     }
 }
 $L = $S[$Lang]

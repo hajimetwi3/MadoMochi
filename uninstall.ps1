@@ -40,7 +40,7 @@ $S = @{
         ask_purge  = "Also delete the buddy's data (~/.claude/buddy: settings, cache, logs)? (y/N)"
         purged     = "Buddy data deleted."
         kept       = "Buddy data kept (position, skin and audio settings survive a reinstall)."
-        done       = "Uninstall complete. Sessions already open keep their hooks until they end"
+        done       = "Uninstall complete. Removal usually applies right away (restart sessions if hooks linger)"
     }
     ja = @{
         no_python  = "python が見つかりません。Python 3.10+ をインストールしてから再実行してください。"
@@ -55,7 +55,7 @@ $S = @{
         ask_purge  = "バディのデータ (~/.claude/buddy: 設定・キャッシュ・ログ) も削除しますか？ (y/N)"
         purged     = "バディのデータを削除しました。"
         kept       = "バディのデータは残しました（位置・スキン・音の設定は再インストール後も生きます）。"
-        done       = "アンインストール完了。開いているセッションのフックはセッション終了まで残ります"
+        done       = "アンインストール完了。除去は通常すぐ反映されます（残るようならセッションを張り直してください）"
     }
 }
 $L = $S[$Lang]

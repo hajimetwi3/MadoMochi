@@ -13,7 +13,7 @@
 ## Just want to play? (five minutes)
 
 ```bash
-cd <your MadoMochi folder>                          # everything below runs from the repo root
+cd "your MadoMochi folder"                          # everything below runs from the repo root
 python3 experimental/macos/apply.py                 # turn this checkout into the Mac build
 python3 -m pip install pyobjc-framework-Quartz      # optional: lets the cat follow the window
 python3 scripts/install_hooks.py                    # let Claude Code drive the buddy
@@ -43,7 +43,7 @@ installer, not by restarting the buddy.
 ## Undo everything
 
 ```bash
-cd <your MadoMochi folder>
+cd "your MadoMochi folder"
 python3 experimental/macos/apply.py --undo --purge-data
 ```
 

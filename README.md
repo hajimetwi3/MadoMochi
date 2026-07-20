@@ -26,6 +26,10 @@ Code hooks.
   "Add python.exe to PATH" during install — `install.ps1` looks for `python`
 - **Claude Code** (desktop app, or the CLI in a terminal window) — the thing
   the buddy docks to and reacts to; it hides while no Claude window exists
+- macOS: not supported yet, but an **untested experimental port** lives in
+  [experimental/macos/](experimental/macos/) — read
+  [experimental/macos/README.md](experimental/macos/README.md) before
+  trying it; real-Mac reports welcome
 
 ## States
 
@@ -37,7 +41,7 @@ Code hooks.
 | `WORKING` | tools running (`Pre/PostToolUse`) | **types on a tiny terminal** |
 | `DONE` | turn finished (`Stop`) / background task finished (`TaskCompleted`) | leap, land, **stomp with confetti** (10s) |
 | `ERROR` | tool failed (`PostToolUseFailure`) / turn aborted (`StopFailure`) | > < eyes, staggering (6s) |
-| `WAITING` | attention notifications (`Notification`: permission prompt, idle prompt, agent-needs-input...) | urgent hops and waving. **Neglect it for a few minutes and the buddy roams your whole screen** until you deal with it, then hurries home |
+| `WAITING` | a permission prompt (`PermissionRequest`) or an attention notification (`Notification`: idle prompt, agent-needs-input...) | urgent hops and waving. **Neglect it for a few minutes and the buddy roams your whole screen** until you deal with it, then hurries home |
 | `SLEEP` | session ended (`SessionEnd`) | sits down, zzz |
 
 Animation grammar: feelings are shown through **motion only** — leans,
@@ -126,6 +130,9 @@ one with `-Lang en` / `-Lang ja`.
 - A new session **auto-launches the buddy** (SessionStart hook); sending a
   prompt revives a crashed one, while a deliberate quit is respected for
   30 minutes
+- **Updating from an earlier version?** After replacing the files,
+  **re-run `install.ps1`** with the same scope as before (only the
+  installer updates the hook wiring)
 
 ### Uninstall
 
@@ -141,7 +148,7 @@ add `-PurgeData` to also delete `~/.claude/buddy` (settings, cache, logs).
 Removal normally applies to running sessions right away too; restart a
 session if hooks seem to linger.
 
-## Quick start
+## Manual start & stop (usually not needed)
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\start_buddy.ps1   # summon
@@ -274,6 +281,13 @@ Runtime files live in `~/.claude/buddy/`: `status.json` (current mood),
   `Get-Content $HOME\.claude\buddy\hook.log -Tail 20` growing means hooks
   fire; if the buddy still doesn't change, restart it. If nothing grows,
   re-run the installer or open a new session.
+- **Denied a permission prompt, but WAITING stays** → when a denial ends
+  the turn right there, no further hook events arrive, so the badge stays
+  put (a known limitation). Your next prompt clears it instantly; to clear
+  it on the spot, pick any state (IDLE, say) from the top of the
+  right-click menu. Left alone, it auto-releases after 15 minutes. An
+  approved long-running command can likewise show WAITING until it
+  finishes and reports back.
 - **Buddy not visible** → it hides while the Claude window is minimized.
   Right-click → follow OFF pins it on screen permanently, or turn on
   corner parking to have it wait on the desktop instead.

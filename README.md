@@ -30,7 +30,7 @@ Code hooks.
   [experimental/macos/](experimental/macos/) — read
   [experimental/macos/README.md](experimental/macos/README.md) before
   trying it; real-Mac reports welcome
-- **MadoMochi keeps its data in the ~/.claude/buddy folder. Do not
+- ⚠️ **MadoMochi keeps its data in the ~/.claude/buddy folder. Do not
   install if a ~/.claude/buddy created by some other tool already
   exists — the installer itself never touches the folder, but the
   running buddy overwrites files inside it (config.json and friends)

@@ -64,6 +64,9 @@ EVENT_TO_MOOD = {
     "StopFailure": ("error", "turn failed"),
     "TaskCompleted": ("happy", "task completed"),
     "Notification": ("alert", "waiting for you"),
+    # permission prompts get their own event: the Notification hook is
+    # known not to fire for them (claude-code issue #56936)
+    "PermissionRequest": ("alert", "waiting for approval"),
     "PreCompact": ("think", "compacting context"),
     "SessionEnd": ("sleep", "session end"),
 }
@@ -79,10 +82,64 @@ EVENT_TO_MOOD.update(
         "stop_failure": EVENT_TO_MOOD["StopFailure"],
         "task_completed": EVENT_TO_MOOD["TaskCompleted"],
         "notification": EVENT_TO_MOOD["Notification"],
+        "permission_request": EVENT_TO_MOOD["PermissionRequest"],
         "pre_compact": EVENT_TO_MOOD["PreCompact"],
         "session_end": EVENT_TO_MOOD["SessionEnd"],
     }
 )
+
+
+# payload field names from the official hook schema - the only strings
+# the default skip log will ever echo back
+_KNOWN_FIELDS = {
+    "session_id", "prompt_id", "transcript_path", "cwd", "permission_mode",
+    "hook_event_name", "hookEventName", "notification_type", "message",
+    "title", "tool_name", "toolName", "tool_input", "tool_response",
+    "effort", "matcher", "source", "reason",
+}
+
+
+def _skip_line(event: str, raw: str, data: dict) -> str:
+    """Shape-only description of an unrecognized payload.
+
+    Default: nothing from the payload is echoed except field names that
+    appear in the official schema; everything else is reduced to
+    lengths/counts. MADOMOCHI_HOOK_DEBUG=1 (local diagnosis only) shows
+    identifier-shaped names instead.
+    """
+    if os.environ.get("MADOMOCHI_HOOK_DEBUG", "") == "1":
+        shown = event if (event.isidentifier() and len(event) <= 40) \
+            else f"<len {len(event)}>"
+        keys = [
+            k if (isinstance(k, str) and k.isidentifier() and len(k) <= 40)
+            else "<odd>"
+            for k in sorted(data)[:12]
+        ]
+    else:
+        shown = f"<unknown len={len(event)}>" if event else "<none>"
+        keys = sorted(k for k in data if isinstance(k, str) and k in _KNOWN_FIELDS)
+        unknown = len(data) - len(keys)
+        if unknown > 0:
+            keys.append(f"<+{unknown} unknown>")
+    return f"skip event={shown!r} len={len(raw)} fields={keys}"
+
+
+def resolve_event(data: dict, argv: list) -> str:
+    """Event name from the payload, else from the wiring's own args.
+
+    Claude Code documents hook_event_name on every payload, but async
+    hooks are known to occasionally receive empty stdin (claude-code
+    issue #38162). The installer plants each event's name as a literal
+    argument in settings.json, so those invocations still identify
+    themselves instead of being dropped.
+    """
+    event = str(data.get("hook_event_name") or data.get("hookEventName") or "")
+    if event:
+        return event
+    for a in argv[1:]:
+        if a in EVENT_TO_MOOD:
+            return str(a)
+    return ""
 
 
 def log(line: str) -> None:
@@ -236,17 +293,13 @@ def main() -> int:
                 # log the shape only — raw hook input can carry session paths
                 log(f"bad_json {e!r} len={len(raw)}")
 
-        event = str(
-            data.get("hook_event_name")
-            or data.get("hookEventName")
-            or os.environ.get("CLAUDE_HOOK_EVENT")
-            or ""
-        )
+        event = resolve_event(data, sys.argv)
         tool = str(data.get("tool_name") or data.get("toolName") or "")
 
         mapped = EVENT_TO_MOOD.get(event)
         if mapped is None:
-            log(f"skip event={event!r}")
+            # diagnosis needs the SHAPE, never the content
+            log(_skip_line(event, raw, data))
             return 0
 
         if notification_is_noise(event, data):

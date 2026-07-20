@@ -304,7 +304,7 @@ def test_bgm_controls_stay_silent(b):
 
 def test_bgm_pause_resume(b):
     import retro_bgm as rb
-    p = rb.RetroBgmPlayer(Path(os.environ.get("TEMP", ".")) / "buddy_test_bgm")
+    p = rb.RetroBgmPlayer(Path(_TEST_HOME) / "buddy_test_bgm")
     calls = []
 
     def fake_restart():
@@ -332,15 +332,19 @@ def test_se_render_and_gate(b):
         buf = rb._render_se(name, 0.35)
         assert buf and all(-1.0 <= s <= 1.0 for s in buf), name
         assert len(buf) < rb.SAMPLE_RATE, name  # one-shots stay under 1s
+    # gate behavior on a dedicated winmm-backend instance — the live
+    # buddy's backend may differ (MacBgmPlayer after the macOS apply)
+    p = rb.RetroBgmPlayer(Path(_TEST_HOME) / "buddy_test_bgm")
     calls = []
-    b.bgm._se_player.play_pcm = lambda pcm, loop=True: calls.append(loop)
-    b.bgm.se_enabled = False
-    b.bgm.play_se("happy")
+    p._se_player._winmm = True  # pretend a device exists; emit is stubbed
+    p._se_player.play_pcm = lambda pcm, loop=True: calls.append(loop)
+    p.se_enabled = False
+    p.play_se("happy")
     assert not calls  # disabled -> silent
-    b.bgm.se_enabled = True
-    b.bgm.play_se("happy")
+    p.se_enabled = True
+    p.play_se("happy")
     assert calls == [False]  # fired once, as a one-shot
-    b.bgm.play_se("nope")
+    p.play_se("nope")
     assert calls == [False]  # unknown id ignored
 
 
@@ -366,8 +370,8 @@ def test_skin_icons(b):
 
 
 def test_show_mode(b):
-    # audio fully stubbed: the show must run silent under test
-    b.bgm._se_player.play_pcm = lambda pcm, loop=True: None
+    # audio fully stubbed (backend-agnostic): the show must run silent
+    b.bgm.play_se = lambda name: None
     b.bgm._restart = lambda: None
     flips = []
     b.bgm.set_enabled = lambda on: (setattr(b.bgm, "enabled", bool(on)), flips.append(bool(on)))
@@ -403,7 +407,7 @@ def test_show_mode(b):
 
 
 def test_show_roam_lap(b):
-    b.bgm._se_player.play_pcm = lambda pcm, loop=True: None
+    b.bgm.play_se = lambda name: None  # backend-agnostic silence
     b.bgm._restart = lambda: None
     b.bgm.set_enabled = lambda on: setattr(b.bgm, "enabled", bool(on))
     b._start_show(60, roam=True)
@@ -503,6 +507,69 @@ def test_notification_filter(b):
     assert not noise("Stop", {"notification_type": "auth_success"})  # wrong event
 
 
+def test_permission_request_mood(b):
+    import hook_entry as he
+    assert he.EVENT_TO_MOOD["PermissionRequest"] == ("alert", "waiting for approval")
+    assert he.EVENT_TO_MOOD["permission_request"][0] == "alert"
+    # PermissionRequest is not a Notification: the noise filter must not eat it
+    assert not he.notification_is_noise(
+        "PermissionRequest", {"notification_type": "auth_success"})
+
+
+def test_skip_line_shape_only(b):
+    import hook_entry as he
+    os.environ.pop("MADOMOCHI_HOOK_DEBUG", None)
+    line = he._skip_line("SecretEventName", '{"x": 1}', {
+        "session_id": "s", "some_private_thing": 1, "message": "hello"})
+    # default: unknown names never echoed - neither the event nor fields
+    assert "SecretEventName" not in line and "some_private_thing" not in line
+    assert "session_id" in line and "message" in line and "<+1 unknown>" in line
+    assert "hello" not in line  # values never, in any mode
+    os.environ["MADOMOCHI_HOOK_DEBUG"] = "1"
+    try:
+        line = he._skip_line("NewEventName", "", {"weird field!": 1})
+        assert "NewEventName" in line  # local diagnosis shows identifiers...
+        assert "weird field!" not in line and "<odd>" in line  # ...only
+    finally:
+        os.environ.pop("MADOMOCHI_HOOK_DEBUG", None)
+
+
+def test_event_argv_fallback(b):
+    import hook_entry as he
+    argv = ["hook_entry.py", "--hajimetwi3-buddy-hook", "Stop"]
+    assert he.resolve_event({}, argv) == "Stop"  # empty stdin -> wiring name
+    assert he.resolve_event({"hook_event_name": "PreToolUse"}, argv) == "PreToolUse"
+    assert he.resolve_event({}, ["hook_entry.py", "--hajimetwi3-buddy-hook"]) == ""
+    assert he.resolve_event({}, ["hook_entry.py", "NotAnEvent"]) == ""
+    # a marker-only foreign arg must never look like an event
+    assert he.resolve_event({}, ["hook_entry.py", "--hajimetwi3-buddy-hook",
+                                 "PermissionRequest"]) == "PermissionRequest"
+
+
+def test_template_wiring(b):
+    tpl = json.loads(
+        (Path(__file__).resolve().parent.parent
+         / "install.settings" / "settings.template.json").read_text(encoding="utf-8"))
+    import hook_entry as he
+    assert "PermissionRequest" in tpl["hooks"], "permission prompts need their own event"
+    for event, groups in tpl["hooks"].items():
+        assert event in he.EVENT_TO_MOOD, f"template wires unknown event {event}"
+        for g in groups:
+            for h in g["hooks"]:
+                assert h["args"][0] == "{{HOOK_ENTRY}}"
+                assert "--hajimetwi3-buddy-hook" in h["args"]
+                # the wiring names its own event so empty-stdin invocations
+                # (claude-code #38162) still identify themselves
+                assert h["args"][-1] == event, f"{event}: args must end with the event"
+                if event == "PermissionRequest":
+                    # synchronous decider path: async would break the
+                    # permission flow, and a wedged hook must not hold
+                    # the prompt hostage for long
+                    assert "async" not in h and h["timeout"] <= 5
+                else:
+                    assert h.get("async") is True
+
+
 def test_singleton_mutex(b):
     import buddy as bd
     assert bd.acquire_singleton()  # slot free (live buddy stopped for tests)
@@ -519,6 +586,61 @@ def test_quit_snooze(b):
     assert not he.recently_quit()  # snooze expired
     he.QUIT_TS.unlink()
     assert not he.recently_quit()  # no marker at all
+
+
+def test_mac_audio_backend(b):
+    mac_dir = Path(__file__).resolve().parent.parent / "experimental" / "macos"
+    if not (mac_dir / "mac_audio.py").is_file():
+        return  # scaffold not shipped in this tree
+    sys.path.insert(0, str(mac_dir))
+    import mac_audio as ma
+
+    class _Proc:
+        """Fake afplay that exits instantly with a nonzero code."""
+
+        def __init__(self, rc):
+            self._rc = rc
+            self._done = False
+
+        def poll(self):
+            return self._rc if self._done else None
+
+        def wait(self, timeout=None):
+            self._done = True
+            return self._rc
+
+        def terminate(self):
+            self._done = True
+
+        def kill(self):
+            self._done = True
+
+    spawned = []
+    orig = ma._spawn_afplay
+    ma._spawn_afplay = lambda path: (spawned.append(str(path)), _Proc(1))[1]
+    try:
+        p = ma.MacBgmPlayer(Path(_TEST_HOME) / "buddy_test_bgm")
+        # SE gate: same semantics as the winmm backend
+        p.se_enabled = False
+        p.play_se("happy")
+        assert spawned == []
+        p.se_enabled = True
+        p.play_se("happy")
+        assert len(spawned) == 1
+        p.play_se("nope")
+        assert len(spawned) == 1
+        # BGM: an instantly-failing afplay must stop after bounded retries,
+        # never turn into a spawn storm
+        p.enabled = True
+        p.set_track("victory_march")
+        deadline = time.time() + 6
+        while time.time() < deadline and p._playing:
+            time.sleep(0.05)
+        assert not p._playing  # gave up on its own
+        assert len(spawned) - 1 == 3  # exactly the bounded retry count
+        p.stop()
+    finally:
+        ma._spawn_afplay = orig
 
 
 def test_i18n_tables(b):
@@ -553,7 +675,7 @@ def test_language_switch(b):
 
 def test_bgm_mood_follow_logic(b):
     import retro_bgm as rb
-    p = rb.RetroBgmPlayer(Path(os.environ.get("TEMP", ".")) / "buddy_test_bgm")
+    p = rb.RetroBgmPlayer(Path(_TEST_HOME) / "buddy_test_bgm")
     p.enabled = True  # exercise the switching logic only...
     p._restart = lambda: None  # ...never the audio device
     p.track_id = "pixel_plaza"
@@ -590,6 +712,7 @@ TESTS = [
     test_bgm_controls_stay_silent,
     test_bgm_pause_resume,
     test_bgm_mood_follow_logic,
+    test_mac_audio_backend,
     test_se_render_and_gate,
     test_park_mode,
     test_skin_icons,
@@ -599,6 +722,10 @@ TESTS = [
     test_hook_scrub,
     test_status_write_atomic,
     test_notification_filter,
+    test_permission_request_mood,
+    test_skip_line_shape_only,
+    test_event_argv_fallback,
+    test_template_wiring,
     test_singleton_mutex,
     test_quit_snooze,
     test_i18n_tables,

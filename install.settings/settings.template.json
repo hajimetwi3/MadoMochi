@@ -6,7 +6,7 @@
           {
             "type": "command",
             "command": "{{PYTHON}}",
-            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook"],
+            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook", "SessionStart"],
             "async": true,
             "timeout": 15
           }
@@ -19,7 +19,7 @@
           {
             "type": "command",
             "command": "{{PYTHON}}",
-            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook"],
+            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook", "UserPromptSubmit"],
             "async": true,
             "timeout": 10
           }
@@ -32,7 +32,7 @@
           {
             "type": "command",
             "command": "{{PYTHON}}",
-            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook"],
+            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook", "PreToolUse"],
             "async": true,
             "timeout": 10
           }
@@ -45,7 +45,7 @@
           {
             "type": "command",
             "command": "{{PYTHON}}",
-            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook"],
+            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook", "PostToolUse"],
             "async": true,
             "timeout": 10
           }
@@ -58,7 +58,7 @@
           {
             "type": "command",
             "command": "{{PYTHON}}",
-            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook"],
+            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook", "PostToolUseFailure"],
             "async": true,
             "timeout": 10
           }
@@ -71,7 +71,7 @@
           {
             "type": "command",
             "command": "{{PYTHON}}",
-            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook"],
+            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook", "Stop"],
             "async": true,
             "timeout": 10
           }
@@ -84,7 +84,7 @@
           {
             "type": "command",
             "command": "{{PYTHON}}",
-            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook"],
+            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook", "StopFailure"],
             "async": true,
             "timeout": 10
           }
@@ -97,7 +97,7 @@
           {
             "type": "command",
             "command": "{{PYTHON}}",
-            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook"],
+            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook", "TaskCompleted"],
             "async": true,
             "timeout": 10
           }
@@ -110,9 +110,21 @@
           {
             "type": "command",
             "command": "{{PYTHON}}",
-            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook"],
+            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook", "Notification"],
             "async": true,
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{PYTHON}}",
+            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook", "PermissionRequest"],
+            "timeout": 5
           }
         ]
       }
@@ -123,7 +135,7 @@
           {
             "type": "command",
             "command": "{{PYTHON}}",
-            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook"],
+            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook", "PreCompact"],
             "async": true,
             "timeout": 10
           }
@@ -136,7 +148,7 @@
           {
             "type": "command",
             "command": "{{PYTHON}}",
-            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook"],
+            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook", "SessionEnd"],
             "async": true,
             "timeout": 10
           }

@@ -110,7 +110,7 @@ the music.
 > - **state & config** — `~/.claude/buddy/` (status, config, caches, logs)
 
 ```powershell
-cd <buddy folder>
+cd "MadoMochi folder"
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 

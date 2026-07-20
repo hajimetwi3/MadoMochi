@@ -1,0 +1,2 @@
+# shell scripts must stay LF — a CRLF shebang breaks /bin/sh on macOS
+*.sh text eol=lf

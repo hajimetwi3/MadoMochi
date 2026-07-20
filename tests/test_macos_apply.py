@@ -447,7 +447,8 @@ def test_backup_cleanup_failure_reported():
     real = mod.shutil
 
     def rmtree(path, **kw):
-        if Path(path) == sb.backup:
+        # macOS may expose the same temp path as /var/... and /private/var/...
+        if Path(path).resolve() == sb.backup.resolve():
             return  # simulate an undeletable folder
         return real.rmtree(path, **kw)
 
@@ -458,7 +459,7 @@ def test_backup_cleanup_failure_reported():
         mod.shutil = real
     assert code == 0, out
     assert sb.stock()
-    assert "could not remove scripts_backup_macos/" in out
+    assert "could not remove scripts_backup_macos/" in out, out
     assert "removed: scripts_backup_macos/" not in out, \
         "never print removed when the folder is still there"
 

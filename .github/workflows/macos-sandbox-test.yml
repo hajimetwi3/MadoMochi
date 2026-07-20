@@ -1,0 +1,58 @@
+name: macOS sandbox test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-sandbox-test
+  cancel-in-progress: true
+
+jobs:
+  test-macos-apply:
+    # 誤って別ブランチを選んだ場合は実行しない
+    if: github.ref_name == github.event.repository.default_branch
+
+    runs-on: macos-15
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6 tag target, verified 2026-07-21
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6 tag target, verified 2026-07-21
+        with:
+          python-version: "3.10"
+
+      - name: Show environment
+        run: |
+          sw_vers
+          uname -m
+          python --version
+
+      - name: Run isolated apply and undo tests
+        run: python -B tests/test_macos_apply.py
+
+      - name: Confirm no test sandbox remains
+        if: always()
+        shell: bash
+        run: |
+          shopt -s nullglob
+          leftovers=("${TMPDIR:-/tmp}"/madomochi_apply_test_*)
+          if (( ${#leftovers[@]} != 0 )); then
+            printf 'Temporary sandbox remains: %s\n' "${leftovers[@]}"
+            exit 1
+          fi
+
+      - name: Confirm repository was not modified
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --short
+            echo "The test modified the repository checkout."
+            exit 1
+          fi

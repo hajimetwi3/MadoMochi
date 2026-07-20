@@ -3,6 +3,8 @@ __pycache__/
 backup-*/
 # sprite-strip renders and screen captures (screens can hold secrets)
 *.png
+# originals saved by experimental/macos/apply.py
+scripts_backup_macos/
 # machine-specific generated settings (+ .bak files);
 # regenerate with: python scripts/install_hooks.py --project .  (or install.ps1)
 .claude/

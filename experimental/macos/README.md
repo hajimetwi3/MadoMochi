@@ -4,7 +4,9 @@
 > Windows; every patch is machine-verified to apply cleanly and the
 > patched code still passes the full test suite on Windows (the macOS
 > branches stay dormant there) — but no line of it has run on an actual
-> Mac yet. Treat it as a well-prepared experiment, not a product.
+> Mac yet. Treat it as a well-prepared experiment, not a product.  
+> ⚠️ **The folder is assumed to be MadoMochi's own — don't run the
+> experiment if some other tool already created ~/.claude/buddy.**
 >
 > 日本語メモ：これはWindows上で作られた、**実機未検証**の移植です。
 > 遊び方は下の *Just want to play?*、全部元に戻す手順は

@@ -343,7 +343,14 @@ MadoMochi application folder.
 This app is provided AS IS, with no warranty of correctness or availability.
 Use at your own risk. Backing up your files is your responsibility.
 
+---  
+
+## Announcements  
+
+- Announced on X as well(in Japanese).  
+  [https://x.com/hajimetwi3/status/2078773256275083572](https://x.com/hajimetwi3/status/2078773256275083572)
+  
 ## Author
 
 [Hajime Tsui](https://hajimetwi3.github.io/hajimetwi3/)  
-X (Twitter): https://x.com/hajimetwi3  
+

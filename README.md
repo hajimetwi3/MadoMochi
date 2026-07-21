@@ -26,17 +26,15 @@ Code hooks.
   "Add python.exe to PATH" during install — `install.ps1` looks for `python`
 - **Claude Code** (desktop app, or the CLI in a terminal window) — the thing
   the buddy docks to and reacts to; it hides while no Claude window exists
-- macOS: not supported yet, but an **untested experimental port** lives in
-  [experimental/macos/](experimental/macos/) — read
-  [experimental/macos/README.md](experimental/macos/README.md) before
-  trying it; real-Mac reports welcome
-- ⚠️ **MadoMochi keeps its data in the ~/.claude/buddy folder. Do not
-  install if a ~/.claude/buddy created by some other tool already
-  exists — the installer itself never touches the folder, but the
-  running buddy overwrites files inside it (config.json and friends)
-  in its own format, and uninstalling with -PurgeData deletes the
-  whole folder. A move to a uniquely-named folder is planned for a
-  future version.**
+- macOS: not supported yet, but an **experimental port** lives in
+  [experimental/macos/](experimental/macos/) — its automated apply/undo
+  tests pass on GitHub-hosted macOS, while the interactive GUI, window
+  tracking, and audio still need real-user testing. Read
+  [experimental/macos/README.md](experimental/macos/README.md) before trying it
+- ⚠️ **MadoMochi keeps its data in the ~/.claude/madomochi folder**
+  (v0.9.2 moved it from the old `~/.claude/buddy`; old data does not
+  carry over — settings reset, so re-pick your skin and preferences).
+  Before installing a newer version, see [Updating](#updating).
 
 ## States
 
@@ -84,7 +82,7 @@ tracks, and an **LED bar** under the sprite lights up with the mood and
 the music.
 
 - **No audio files** — every track is synthesized on the fly with the
-  standard library only (WAV cache in `~/.claude/buddy/bgm_cache`; nothing
+  standard library only (WAV cache in `~/.claude/madomochi/bgm_cache`; nothing
   leaves your machine)
 - **Gapless looping** via winmm waveOut hardware loops (falls back to
   winsound where unavailable)
@@ -114,7 +112,7 @@ the music.
 > After installing, three places are in use:
 > - **this folder** — the app itself (scripts/ and skins, run in place)
 > - **hook wiring** — `~/.claude/settings.json` (or a project's `.claude/settings.json`)
-> - **state & config** — `~/.claude/buddy/` (status, config, caches, logs)
+> - **state & config** — `~/.claude/madomochi/` (status, config, caches, logs)
 
 ```powershell
 cd "MadoMochi folder"
@@ -137,9 +135,7 @@ one with `-Lang en` / `-Lang ja`.
 - A new session **auto-launches the buddy** (SessionStart hook); sending a
   prompt revives a crashed one, while a deliberate quit is respected for
   30 minutes
-- **Updating from an earlier version?** After replacing the files,
-  **re-run `install.ps1`** with the same scope as before (only the
-  installer updates the hook wiring)
+- **Updating?** See [Updating](#updating) before installing the new version
 
 ### Uninstall
 
@@ -151,7 +147,8 @@ Same interactive choices as the installer (global / this project / another
 folder). It dismisses the buddy and removes **only the buddy's wiring**
 from settings.json — other settings and other hooks are untouched, with an
 automatic backup. Scripted: `uninstall.ps1 -Global` / `-Project <dir>`;
-add `-PurgeData` to also delete `~/.claude/buddy` (settings, cache, logs).
+add `-PurgeData` to clear the saved settings, cache, and logs in
+`~/.claude/madomochi`.
 Removal normally applies to running sessions right away too; restart a
 session if hooks seem to linger.
 
@@ -195,7 +192,7 @@ temporarily floored at 35% — then restores your audio settings afterwards.
 Made for recording README GIFs: roaming is left out by default so the
 buddy never leaves the frame, with an "Include roaming" checkbox for
 stage/event runs. Values persist in
-`~/.claude/buddy/config.json`
+`~/.claude/madomochi/config.json`
 (`walk_after_sec` / `premium_min_sec` / `premium_max_sec` / `roam_after_sec` /
 `scale` / `skin` / `bgm_enabled` / `bgm_volume` / `bgm_track` /
 `bgm_follow_mood` / `led_enabled` / `led_mode` / `se_enabled` /
@@ -273,11 +270,12 @@ MadoMochi/                  # repo root
     start_buddy.ps1 / stop_buddy.ps1
   tests/
     test_units.py           # regression suite (run with the buddy stopped)
+    test_macos_apply.py     # isolated macOS apply/undo safety tests
     soccer_strip.py         # render sprite phases to PNG
     capture.ps1             # DPI-aware screen capture (-CropX/-CropY/-CropW/-CropH/-Zoom)
 ```
 
-Runtime files live in `~/.claude/buddy/`: `status.json` (current mood),
+Runtime files live in `~/.claude/madomochi/`: `status.json` (current mood),
 `config.json` (position & settings), `hook.log` (every hook event),
 `buddy_err.log` (render-loop errors, rotated at 1MB), `bgm_cache/`
 (synthesized WAV loops).
@@ -285,7 +283,7 @@ Runtime files live in `~/.claude/buddy/`: `status.json` (current mood),
 ## Troubleshooting
 
 - **Not reacting to the session** →
-  `Get-Content $HOME\.claude\buddy\hook.log -Tail 20` growing means hooks
+  `Get-Content $HOME\.claude\madomochi\hook.log -Tail 20` growing means hooks
   fire; if the buddy still doesn't change, restart it. If nothing grows,
   re-run the installer or open a new session.
 - **Denied a permission prompt, but WAITING stays** → when a denial ends
@@ -303,6 +301,30 @@ Runtime files live in `~/.claude/buddy/`: `status.json` (current mood),
   respected for 30 minutes — a new session or start_buddy.ps1 brings it
   back immediately.
 - **Edited the sprites** → stop & start the buddy to reload.
+
+## Updating
+
+1. Right-click the running MadoMochi, select **Quit**, and wait until it
+   disappears.
+2. From the new version's folder, run:
+
+```powershell
+cd "new MadoMochi folder"
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+Choose the same hook scope you used before (repeat this for each scope if
+you wired more than one). A separate uninstall of the old version is not
+needed: the installer replaces the existing MadoMochi hook wiring.
+
+When updating from v0.9.1 or earlier, the old runtime-data folder
+`~/.claude/buddy` may remain. MadoMochi v0.9.2 and later do not use it.
+After confirming that the new version works, you may delete it manually;
+it is normally small and leaving it in place does not affect MadoMochi.
+Old settings are not migrated, so re-select your skin and other preferences.
+
+After confirming that the update works, you may delete the old version's
+MadoMochi application folder.
 
 ## Notes
 

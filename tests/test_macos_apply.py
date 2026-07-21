@@ -376,7 +376,7 @@ def test_corrupt_settings_reported():
 def test_stop_failure_blocks_purge():
     sb = Sandbox()
     sb.apply_ok()
-    state = sb.home / ".claude" / "buddy"
+    state = sb.home / ".claude" / "madomochi"
     state.mkdir(parents=True)
     (state / "config.json").write_text("{}", encoding="utf-8")
     sb.mod._stop_buddy = lambda: (False, "buddy: still running (stubbed)")
@@ -480,7 +480,7 @@ def test_default_undo_is_restore_only():
 def test_purge_gated_off_nonmac():
     sb = Sandbox()
     sb.apply_ok()
-    state = sb.home / ".claude" / "buddy"
+    state = sb.home / ".claude" / "madomochi"
     state.mkdir(parents=True)
     (state / "config.json").write_text("{}", encoding="utf-8")
     code, out = sb.run("--undo", "--purge-data")
@@ -525,7 +525,7 @@ def test_stock_tree_undo_still_unhooks():
 
 def test_stock_tree_purge_gated_on_stop():
     sb = Sandbox()
-    state = sb.home / ".claude" / "buddy"
+    state = sb.home / ".claude" / "madomochi"
     state.mkdir(parents=True)
     (state / "config.json").write_text("{}", encoding="utf-8")
     sb.load()
@@ -596,7 +596,7 @@ def test_manifest_version_and_shape_strict():
 
 def test_stock_purge_blocked_on_unhook_failure():
     sb = Sandbox()
-    state = sb.home / ".claude" / "buddy"
+    state = sb.home / ".claude" / "madomochi"
     state.mkdir(parents=True)
     (state / "config.json").write_text("{}", encoding="utf-8")
     sb.settings.write_text("{not json", encoding="utf-8")  # unhook will fail
@@ -612,7 +612,7 @@ def test_legacy_restore_failure_keeps_data():
     sb = Sandbox()
     sb.apply_ok()
     sb.manifest.unlink()
-    state = sb.home / ".claude" / "buddy"
+    state = sb.home / ".claude" / "madomochi"
     state.mkdir(parents=True)
     (state / "config.json").write_text("{}", encoding="utf-8")
     blocked = sb.scripts / "window_pos.py"
@@ -635,7 +635,7 @@ def test_no_quit_stamp_without_target():
     code, out = sb.run("--undo", "--force")
     assert code == 0, out
     assert "buddy: not running" in out
-    assert not (sb.home / ".claude" / "buddy" / "quit.ts").exists(), \
+    assert not (sb.home / ".claude" / "madomochi" / "quit.ts").exists(), \
         "no target buddy means no quit stamp (it would snooze OTHER checkouts)"
 
 

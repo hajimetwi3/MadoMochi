@@ -1,14 +1,16 @@
-# MadoMochi on macOS — untested experimental port
+# MadoMochi on macOS — experimental port
 
-> ⚠️ **Status: UNTESTED on real macOS.** Written and review-hardened on
-> Windows; every patch is machine-verified to apply cleanly and the
-> patched code still passes the full test suite on Windows (the macOS
-> branches stay dormant there) — but no line of it has run on an actual
-> Mac yet. Treat it as a well-prepared experiment, not a product.  
-> ⚠️ **The folder is assumed to be MadoMochi's own — don't run the
-> experiment if some other tool already created ~/.claude/buddy.**
+> ⚠️ **Status: automated apply/undo tests pass on GitHub-hosted macOS 15
+> (arm64).** The interactive GUI, Claude window tracking, audio output,
+> and multi-display behavior still need real-user testing. Treat this as
+> an experiment, not a finished product.  
+> ⚠️ **Runtime data lives in ~/.claude/madomochi (moved from
+> ~/.claude/buddy in v0.9.2; old data does not carry over).**
+> If upgrading from v0.9.1 or earlier, see
+> [Updating](#updating-from-v091-to-v092-or-later) first.
 >
-> 日本語メモ：これはWindows上で作られた、**実機未検証**の移植です。
+> 日本語メモ：apply/undoの自動テストはmacOS上で合格していますが、GUI・
+> ウィンドウ追従・音声等は実利用環境で未検証です。
 > 遊び方は下の *Just want to play?*、全部元に戻す手順は
 > *Undo everything* にあります。結果はissueへどうぞ（部分報告歓迎）。
 
@@ -32,15 +34,27 @@ LISTEN → THINK → WORKING → DONE with confetti. Then right-click the
 cat: 13 skins, walk/gym/soccer demos, retro chiptune BGM, sound
 effects, a settings dialog with a full showcase demo. Poke it, too.
 
-If something looks broken, that's a finding, not a failure — this
-build has never met a real Mac before you. **Undo everything** below
-reverses the whole experiment with one command, and the checklist
-further down shows which observations help most.
+If something looks broken, that's a finding, not a failure. **Undo
+everything** below reverses the whole experiment with one command, and
+the checklist further down shows which observations help most.
 
-Updating from an earlier version of this scaffold? After the apply,
-re-run `python3 scripts/install_hooks.py` — newer hook wiring (the
-permission-prompt event and per-event args) is only added by the
-installer, not by restarting the buddy.
+### Updating from v0.9.1 to v0.9.2 or later
+
+Before deleting or replacing the v0.9.1 checkout:
+
+```bash
+cd "your v0.9.1 MadoMochi folder"
+./scripts/stop_buddy.sh
+python3 experimental/macos/apply.py --undo
+```
+
+Then replace the checkout and follow the quick-start steps above from
+the v0.9.2-or-later folder. Old settings are not migrated; re-select
+your skin and other preferences after updating. The old runtime-data
+folder `~/.claude/buddy` may remain; v0.9.2 and later do not use it.
+After confirming that the new version works, you may delete it manually,
+or leave it in place — it is normally small and does not affect MadoMochi.
+You may also delete the old MadoMochi checkout after confirming the update.
 
 ## Undo everything
 
@@ -52,7 +66,7 @@ python3 experimental/macos/apply.py --undo --purge-data
 That is the everything-off switch — the one to use when you are done
 playing. (`--undo` on its own stops the buddy, removes the hooks and
 restores the sources but keeps the buddy's saved position, settings
-and audio cache in `~/.claude/buddy`; add `--purge-data`, as above,
+and audio cache in `~/.claude/madomochi`; add `--purge-data`, as above,
 unless you plan to try again later.)
 
 One command reverses the whole experiment: it dismisses the buddy,
@@ -83,9 +97,10 @@ exits nonzero instead of claiming success.
   machine's real installation, so off macOS they need an explicit
   `--force`. Undoing a test copy can never touch the buddy you
   actually use.
-- `--purge-data` additionally deletes `~/.claude/buddy` (the buddy's
+- `--purge-data` additionally deletes `~/.claude/madomochi` (the buddy's
   saved position, settings and audio cache). Nothing else on your
-  machine is ever touched.
+  machine is ever touched. Before v0.9.2 the folder was
+  `~/.claude/buddy`; it is not migrated or removed automatically.
 - Wired a single project instead of globally? Also run
   `python3 scripts/install_hooks.py --uninstall --project <dir>`.
 - The `settings.json` backups are deliberately kept as your safety

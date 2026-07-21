@@ -9,7 +9,6 @@ window and reacts to what your session is actually doing — via Claude
 Code hooks.
 *(Unofficial community project — not affiliated with Anthropic.)*
 
-> **Why a separate window?**
 > Claude Code's UI has no slot for a live character, so the buddy is a
 > frameless, chroma-key-transparent, always-on-top window that tracks the
 > Claude Code window and reads a status file written by hooks.

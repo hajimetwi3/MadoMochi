@@ -408,14 +408,14 @@ def _stop_buddy() -> tuple:
 
     Returns (ok, message): ok is True only when the buddy is verifiably
     gone (or was never running). quit.ts lives in the SHARED
-    ~/.claude/buddy and snoozes prompt-revival for every checkout, so it
+    ~/.claude/madomochi and snoozes prompt-revival for every checkout, so it
     is stamped only when there is actually a buddy here to stop.
     """
     try:
         if not _buddy_present():
             return True, "buddy: not running"
         try:
-            buddy_dir = Path.home() / ".claude" / "buddy"
+            buddy_dir = Path.home() / ".claude" / "madomochi"
             buddy_dir.mkdir(parents=True, exist_ok=True)
             (buddy_dir / "quit.ts").write_text(str(time.time()), encoding="utf-8")
         except OSError:
@@ -494,12 +494,12 @@ def _unhook_this_checkout() -> str:
 
 
 def _purge_runtime() -> list:
-    """Delete ~/.claude/buddy, existence-verified. Returns problems."""
-    target = Path.home() / ".claude" / "buddy"
+    """Delete ~/.claude/madomochi, existence-verified. Returns problems."""
+    target = Path.home() / ".claude" / "madomochi"
     shutil.rmtree(target, ignore_errors=True)
     if target.exists():
-        return ["could not fully remove ~/.claude/buddy (files in use?)"]
-    print("  removed: ~/.claude/buddy (state, config, caches)")
+        return ["could not fully remove ~/.claude/madomochi (files in use?)"]
+    print("  removed: ~/.claude/madomochi (state, config, caches)")
     return []
 
 
@@ -868,7 +868,7 @@ def main() -> int:
     ap.add_argument("--undo", action="store_true", help="reverse the apply: stop, unhook, restore")
     ap.add_argument(
         "--purge-data", action="store_true",
-        help="with --undo: also delete ~/.claude/buddy (state, config, caches)",
+        help="with --undo: also delete ~/.claude/madomochi (state, config, caches)",
     )
     args = ap.parse_args()
 

@@ -3,7 +3,9 @@
 > ⚠️ **Status: automated apply/undo tests pass on GitHub-hosted macOS 15
 > (arm64).** The interactive GUI, Claude window tracking, audio output,
 > and multi-display behavior still need real-user testing. Treat this as
-> an experiment, not a finished product.  
+> an experiment, not a finished product. Candidate repairs for transparent
+> pixel remnants and lost topmost state are included, but still await
+> confirmation on the Mac configuration that reported them.
 > ⚠️ **Runtime data lives in ~/.claude/madomochi (moved from
 > ~/.claude/buddy in v0.9.2; old data does not carry over).**
 > If upgrading from v0.9.1 or earlier, see
@@ -19,7 +21,7 @@
 ```bash
 cd "your MadoMochi folder"                          # everything below runs from the repo root
 python3 experimental/macos/apply.py                 # turn this checkout into the Mac build
-python3 -m pip install pyobjc-framework-Quartz      # optional: lets the cat follow the window
+python3 -m pip install pyobjc-framework-Quartz      # optional: window following + native redraw repair
 python3 scripts/install_hooks.py                    # let Claude Code drive the buddy
 ./scripts/start_buddy.sh
 ```
@@ -28,6 +30,10 @@ A little pixel cat should appear near your Claude Code window — or, if
 you skipped pyobjc, in the **bottom-right corner of the desktop**:
 without Quartz the cat cannot follow windows, so it parks there
 automatically (no configuration needed).
+
+The PyObjC line is optional for basic corner-parking mode. It is strongly
+recommended for this experiment: besides window following, it enables the
+native full-window redraw used to clear stale transparent pixels on macOS.
 
 Now chat with Claude Code and watch the badge over its head:
 LISTEN → THINK → WORKING → DONE with confetti. Then right-click the
@@ -145,6 +151,12 @@ reverses the apply completely (see **Undo everything** above).
 | F | `stop_buddy.sh`'s SIGTERM routes through the normal close path, so audio stops and the quit marker is stamped |
 | G | the hook launcher detaches with `start_new_session` on POSIX |
 | H | without Quartz, corner parking becomes the default (an explicit config value still wins) |
+| I | imports the AppKit bridge when PyObjC is present; absence remains a supported degraded path |
+| J | adds Aqua recovery helpers: a real topmost OFF→ON transition and full native-view invalidation |
+| K | reasserts topmost immediately and again after an Aqua window remap settles |
+| L | makes Reset position repair the topmost window level too |
+| M | makes the menu's Always on top: ON action force a real state transition instead of a cached no-op |
+| N | requests a full transparent-window redraw after each changed sprite frame so cleared pixels are repainted |
 
 Plus file drops: the Quartz `window_pos.py` (tracks the window number,
 refreshes its bounds every ~250ms call, full sweep every 2s), the
@@ -166,6 +178,11 @@ wait → kill), and `start/stop_buddy.sh`.
   reads only application names, never titles, so that prompt should not
   appear. If macOS asks for it anyway, that's a finding — please
   report it.
+- **The new GUI repairs still need reporter confirmation** — their logic is
+  covered by a no-GUI regression test, but only a real Aqua/Tk window can
+  prove that transparent remnants and the topmost loss are gone. Without
+  PyObjC, the native redraw repair is unavailable; MadoMochi still starts in
+  degraded corner-parking mode.
 
 ## Verification checklist — for humans and coding agents 🍡
 
@@ -200,9 +217,21 @@ list; every item is equally doable by hand.
    (`MADOMOCHI_MAC_DEBUG=all` prints every open window instead — local
    use only. Running via `start_buddy.sh` hides this output, hence the
    direct command.)
-3. **Does the window look right?** The sprite should stand free (no
-   colored rectangle behind it), stay on top, and drag/settings/focus
-   should all work at once.
+3. **Does the window look right and recover correctly?** The sprite should
+   stand free (no colored rectangle behind it), stay on top, and
+   drag/settings/focus should all work at once. Switch between skins and
+   trigger DONE/confetti several times; pixels from the old skin or effect
+   should not remain. Hide and restore the Claude window and confirm the
+   buddy is still above it. If it ever falls behind, choose **Always on top:
+   OFF**, then **Always on top: ON**, and report whether that restores it
+   without restarting. Also include the single version number printed by:
+
+   ```bash
+   python3 -c "import tkinter as tk; r=tk.Tk(); print(r.tk.call('info', 'patchlevel')); r.destroy()"
+   ```
+
+   This command only reads the Tk window-system version; it changes no files
+   or settings.
 4. **Does the menu open?** Right-click and Control-click should both
    bring it up.
 5. **Still exactly one buddy?** Chat for a few minutes, then

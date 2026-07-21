@@ -124,6 +124,29 @@ class Sandbox:
         assert "manifest: written" in out, out
         return out
 
+    def load_patched_buddy(self):
+        """Apply, then import this sandbox's buddy without a Tk window."""
+        self.apply_ok()
+        module_name = f"patched_buddy_under_test_{Sandbox.counter}"
+        local_names = ("window_pos", "i18n", "retro_bgm", "mac_audio")
+        saved_modules = {name: sys.modules.get(name) for name in local_names}
+        saved_path = list(sys.path)
+        try:
+            for name in local_names:
+                sys.modules.pop(name, None)
+            sys.path.insert(0, str(self.scripts))
+            spec = importlib.util.spec_from_file_location(
+                module_name, self.scripts / "buddy.py")
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+        finally:
+            sys.path[:] = saved_path
+            for name in local_names:
+                sys.modules.pop(name, None)
+                if saved_modules[name] is not None:
+                    sys.modules[name] = saved_modules[name]
+
     def edit_manifest(self, fn):
         data = json.loads(self.manifest.read_text(encoding="utf-8"))
         fn(data)
@@ -639,6 +662,104 @@ def test_no_quit_stamp_without_target():
         "no target buddy means no quit stamp (it would snooze OTHER checkouts)"
 
 
+def test_mac_gui_recovery_contract():
+    """Exercise the new Aqua recovery logic without needing a real GUI."""
+    sb = Sandbox()
+    mod = sb.load_patched_buddy()
+    mod.sys = types.SimpleNamespace(platform="darwin")
+
+    class Root:
+        def __init__(self):
+            self.calls = []
+            self.pending = []
+
+        def attributes(self, *args):
+            self.calls.append(("attributes", args))
+
+        def lift(self):
+            self.calls.append(("lift", ()))
+
+        def after_idle(self, callback):
+            self.pending.append(("idle", callback))
+
+        def after(self, delay, callback):
+            self.pending.append((delay, callback))
+
+    buddy = mod.FloatBuddy.__new__(mod.FloatBuddy)
+    buddy.root = Root()
+    buddy._schedule_topmost_restore()
+    expected = [
+        ("attributes", ("-topmost", False)),
+        ("attributes", ("-topmost", True)),
+        ("lift", ()),
+    ]
+    assert buddy.root.calls == expected
+    assert [when for when, _callback in buddy.root.pending] == ["idle", 120]
+    for _when, callback in list(buddy.root.pending):
+        callback()
+    assert buddy.root.calls == expected * 3, \
+        "every recovery pass must force a real false-to-true transition"
+
+    class View:
+        def __init__(self):
+            self.requests = []
+
+        def setNeedsDisplay_(self, value):
+            self.requests.append(value)
+
+    view = View()
+
+    class Window:
+        def title(self):
+            return mod.BUDDY_TITLE
+
+        def contentView(self):
+            return view
+
+    window = Window()
+
+    class Application:
+        @staticmethod
+        def sharedApplication():
+            return types.SimpleNamespace(windows=lambda: [window])
+
+    mod._NSApplication = Application
+    buddy._mac_transparent = True
+    buddy._mac_nswindow = None
+    buddy._mac_redraw_surface()
+    assert buddy._mac_nswindow is window
+    assert view.requests == [True], \
+        "the entire native transparent content view must be invalidated"
+
+    # Missing PyObjC is an intentionally supported degraded path.
+    mod._NSApplication = None
+    buddy._mac_redraw_surface()
+    assert view.requests == [True]
+
+
+def test_previous_patchset_upgrades_and_undoes():
+    """An already-applied pre-I..N tree must upgrade without re-basing."""
+    sb = Sandbox()
+    mod = sb.load()
+    current_patches = list(mod.PATCHES)
+    mod.PATCHES = current_patches[:9]  # A..H/G: the previous public scaffold
+    code, out = sb.run("--force")
+    assert code == 0, out
+
+    mod.PATCHES = current_patches
+    code, out = sb.run("--force")
+    assert code == 0, out
+    assert "patched: I native redraw bridge" in out
+    assert "patched: N full-surface transparent redraw" in out
+    patched = (sb.scripts / "buddy.py").read_text(encoding="utf-8")
+    assert "def _mac_redraw_surface" in patched
+    assert "command=self._force_topmost" in patched
+
+    code, out = sb.run("--undo", "--force")
+    assert code == 0, out
+    assert sb.stock(), "upgraded trees must still undo to the first stock baseline"
+
+
 TESTS = [
     test_manifest_schema_accepts_valid,
     test_apply_undo_roundtrip_with_externals,
@@ -673,6 +794,8 @@ TESTS = [
     test_stock_purge_blocked_on_unhook_failure,
     test_legacy_restore_failure_keeps_data,
     test_no_quit_stamp_without_target,
+    test_mac_gui_recovery_contract,
+    test_previous_patchset_upgrades_and_undoes,
 ]
 
 

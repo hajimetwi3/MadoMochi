@@ -13,7 +13,8 @@ concurrency:
 jobs:
   test-macos-apply:
     # 誤って別ブランチを選んだ場合は実行しない
-    if: github.ref_name == github.event.repository.default_branch
+    #if: github.ref_name == github.event.repository.default_branch
+    if: github.actor == github.repository_owner
 
     runs-on: macos-15
     timeout-minutes: 10

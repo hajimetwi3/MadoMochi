@@ -5,7 +5,7 @@ MadoMochi — always-on-top floating pixel companion for Claude Code.
 - Frameless, chroma-key transparent (Windows)
 - Docks to the Claude Code window: bottom-right, above the prompt box
 - Follows the window as it moves / hides when Claude is closed or minimized
-- Polls ~/.claude/buddy/status.json (written by Claude Code hooks)
+- Polls ~/.claude/madomochi/status.json (written by Claude Code hooks)
 - Poses: idle / listen / think / work / happy(done) / error / alert / sleep
 - Extras: variable frame holds, idle walks, premium barbell curls & soccer
   keep-ups (random pick), poke reaction on click (squeeze > < then hop)
@@ -81,7 +81,7 @@ def discover_skins() -> dict:
             continue  # a broken skin file must never take the buddy down
     return skins
 
-BUDDY_DIR = Path(os.environ.get("CLAUDE_BUDDY_DIR", Path.home() / ".claude" / "buddy"))
+BUDDY_DIR = Path(os.environ.get("CLAUDE_BUDDY_DIR", Path.home() / ".claude" / "madomochi"))
 STATUS_PATH = Path(os.environ.get("CLAUDE_BUDDY_STATUS", BUDDY_DIR / "status.json"))
 CONFIG_PATH = BUDDY_DIR / "config.json"
 CHROMA = "#ff00ff"

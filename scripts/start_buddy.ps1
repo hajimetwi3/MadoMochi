@@ -11,7 +11,7 @@ if ($py) {
 if (-not $pyw) { $pyw = "pythonw" }
 
 # a manual start is explicit consent: lift any quit-snooze on auto-revival
-Remove-Item (Join-Path $env:USERPROFILE ".claude\buddy\quit.ts") -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $env:USERPROFILE ".claude\madomochi\quit.ts") -ErrorAction SilentlyContinue
 
 Start-Process -FilePath $pyw -ArgumentList "`"$script`"" -WindowStyle Hidden
 Write-Host "MadoMochi launched (duplicate instances exit by themselves)."

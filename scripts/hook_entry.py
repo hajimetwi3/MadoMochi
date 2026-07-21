@@ -3,7 +3,7 @@
 Claude Code hook entrypoint for MadoMochi.
 
 Reads the hook JSON from stdin, maps the event to a buddy mood, and writes
-~/.claude/buddy/status.json. On SessionStart it also launches the floating
+~/.claude/madomochi/status.json. On SessionStart it also launches the floating
 buddy window if it is not running yet.
 
 MUST always exit 0 and print nothing (fail-open: never block Claude Code).
@@ -21,7 +21,7 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
-BUDDY_DIR = Path(os.environ.get("CLAUDE_BUDDY_DIR", Path.home() / ".claude" / "buddy"))
+BUDDY_DIR = Path(os.environ.get("CLAUDE_BUDDY_DIR", Path.home() / ".claude" / "madomochi"))
 STATUS_PATH = Path(os.environ.get("CLAUDE_BUDDY_STATUS", BUDDY_DIR / "status.json"))
 LOG_PATH = BUDDY_DIR / "hook.log"
 SPAWN_GUARD = BUDDY_DIR / "spawn.ts"

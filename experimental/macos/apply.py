@@ -28,6 +28,13 @@ The patches (all real code, no hand-editing):
   G  hook launcher detach      — start_new_session on POSIX
   H  corner-parking default    — parks when Quartz is unavailable
                                  (an explicit config value still wins)
+  I  native redraw bridge      — optional AppKit access for full-view redraws
+  J  window recovery helpers   — repair topmost state after an Aqua remap
+                                 and invalidate stale transparent pixels
+  K  remap recovery            — reassert topmost after Map events
+  L  reset-position recovery   — also repairs the native window level
+  M  menu topmost recovery     — OFF -> ON transition, not a stale no-op
+  N  transparent redraw        — invalidate the complete nonopaque view
 
 Re-running is safe: applied patches are recognized and skipped.
 """
@@ -381,6 +388,167 @@ else:
             close_fds=True,
             **kwargs,
         )""",
+    },
+    {
+        "name": "I native redraw bridge",
+        "file": BUDDY,
+        "marker": "NSApplication as _NSApplication",
+        "anchor": """import tkinter as tk
+import traceback""",
+        "replace": """import tkinter as tk
+import traceback
+
+if sys.platform == "darwin":
+    try:
+        from AppKit import NSApplication as _NSApplication
+    except Exception:
+        _NSApplication = None
+else:
+    _NSApplication = None""",
+    },
+    {
+        "name": "J macOS window recovery helpers",
+        "file": BUDDY,
+        "marker": "def _mac_redraw_surface",
+        "anchor": """    def _set_hidden(self, hidden: bool) -> None:
+        if hidden == self._hidden:
+            return
+        self._hidden = hidden
+        try:
+            if hidden:
+                self.root.withdraw()
+            else:
+                self.root.deiconify()
+                self.root.attributes("-topmost", True)
+                self._sched_reset()
+        except tk.TclError:
+            pass
+        # an invisible buddy shouldn't keep the concert going
+        try:
+            if hidden:
+                self.bgm.pause()
+            else:
+                self.bgm.resume()
+        except Exception:
+            pass""",
+        "replace": """    def _force_topmost(self) -> None:
+        \"\"\"Reapply the window level after Aqua has remapped the NSWindow.\"\"\"
+        try:
+            if sys.platform == "darwin":
+                # A false -> true transition matters: Tk can still cache True
+                # after Aqua has reset the underlying NSWindow level.
+                self.root.attributes("-topmost", False)
+            self.root.attributes("-topmost", True)
+            self.root.lift()
+        except tk.TclError:
+            pass
+
+    def _schedule_topmost_restore(self) -> None:
+        \"\"\"Repair both the immediate and delayed sides of an Aqua remap.\"\"\"
+        self._force_topmost()
+        if sys.platform != "darwin":
+            return
+        try:
+            self.root.after_idle(self._force_topmost)
+            self.root.after(120, self._force_topmost)
+        except tk.TclError:
+            pass
+
+    def _mac_redraw_surface(self) -> None:
+        \"\"\"Invalidate the complete transparent Aqua content view.\"\"\"
+        if (
+            sys.platform != "darwin"
+            or not getattr(self, "_mac_transparent", False)
+            or _NSApplication is None
+        ):
+            return
+        try:
+            window = getattr(self, "_mac_nswindow", None)
+            if window is None or str(window.title()) != BUDDY_TITLE:
+                window = None
+                app = _NSApplication.sharedApplication()
+                for candidate in app.windows():
+                    if str(candidate.title()) == BUDDY_TITLE:
+                        window = candidate
+                        break
+                self._mac_nswindow = window
+            if window is None:
+                return
+            view = window.contentView()
+            if view is not None:
+                view.setNeedsDisplay_(True)
+        except Exception:
+            # A stale PyObjC proxy after a remap is harmless. Clear it so
+            # the next frame searches for the replacement NSWindow.
+            self._mac_nswindow = None
+
+    def _set_hidden(self, hidden: bool) -> None:
+        if hidden == self._hidden:
+            return
+        self._hidden = hidden
+        try:
+            if hidden:
+                self.root.withdraw()
+            else:
+                self.root.deiconify()
+                self._schedule_topmost_restore()
+                self._sched_reset()
+        except tk.TclError:
+            pass
+        # an invisible buddy shouldn't keep the concert going
+        try:
+            if hidden:
+                self.bgm.pause()
+            else:
+                self.bgm.resume()
+        except Exception:
+            pass""",
+    },
+    {
+        "name": "K remap topmost recovery",
+        "file": BUDDY,
+        "marker": "<Map>",
+        "anchor": """        self.root.bind("<Escape>", lambda e: self._on_close())""",
+        "replace": """        self.root.bind("<Escape>", lambda e: self._on_close())
+        if sys.platform == "darwin":
+            self.root.bind(
+                "<Map>", lambda _e: self._schedule_topmost_restore(), add="+"
+            )""",
+    },
+    {
+        "name": "L reset-position topmost recovery",
+        "file": BUDDY,
+        "marker": "window-level repair on macOS",
+        "anchor": """    def _reset_position(self) -> None:
+        self.user_dx = 0
+        self.user_dy = 0
+        self._save_config()
+        self._apply_follow()""",
+        "replace": """    def _reset_position(self) -> None:
+        self.user_dx = 0
+        self.user_dy = 0
+        self._save_config()
+        self._apply_follow()
+        # Position reset doubles as a window-level repair on macOS.
+        if sys.platform == "darwin":
+            self._schedule_topmost_restore()""",
+    },
+    {
+        "name": "M menu topmost recovery",
+        "file": BUDDY,
+        "marker": "command=self._force_topmost",
+        "anchor": """        menu.add_command(label=t("topmost_on"), command=lambda: self.root.attributes("-topmost", True))""",
+        "replace": """        menu.add_command(label=t("topmost_on"), command=self._force_topmost)""",
+    },
+    {
+        "name": "N full-surface transparent redraw",
+        "file": BUDDY,
+        "marker": "pixels that became transparent",
+        "anchor": """        self.canvas.itemconfigure(self.canvas_img, image=img)""",
+        "replace": """        self.canvas.itemconfigure(self.canvas_img, image=img)
+        # Aqua can retain old backing-store pixels when an opaque pixel
+        # becomes clear. Invalidate the full nonopaque native view.
+        self._mac_redraw_surface()  # clears pixels that became transparent""",
     },
 ]
 
@@ -1072,8 +1240,9 @@ def main() -> int:
 
     print(
         "\nDone. Next steps:\n"
-        "  1. optional window-following:  python3 -m pip install pyobjc-framework-Quartz\n"
-        "     (without it the buddy parks in the desktop corner automatically)\n"
+        "  1. optional Mac window support: python3 -m pip install pyobjc-framework-Quartz\n"
+        "     (window following plus the native transparent-redraw repair;\n"
+        "      without it the buddy parks in the desktop corner automatically)\n"
         "  2. run the suite:              python3 -B tests/test_units.py\n"
         "  3. wire the hooks:             python3 scripts/install_hooks.py\n"
         "  4. start:                      ./scripts/start_buddy.sh\n"

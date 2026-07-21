@@ -3,7 +3,7 @@
 # Interactive:      powershell -ExecutionPolicy Bypass -File uninstall.ps1
 # Scripted:         uninstall.ps1 -Global            (remove the global wiring)
 #                   uninstall.ps1 -Project <dir>     (remove one project's wiring)
-#                   add -PurgeData to also delete ~/.claude/buddy (state/config/cache)
+#                   add -PurgeData to also delete ~/.claude/madomochi (state/config/cache)
 #                   add -Lang en / -Lang ja to force the prompt language
 param(
     [switch]$Global,
@@ -37,7 +37,7 @@ $S = @{
         ask_path   = "Full path of the project folder"
         not_found  = "Folder not found: {0}"
         cancelled  = "Cancelled"
-        ask_purge  = "Also delete the buddy's data (~/.claude/buddy: settings, cache, logs)? (y/N)"
+        ask_purge  = "Also delete the buddy's data (~/.claude/madomochi: settings, cache, logs)? (y/N)"
         purged     = "Buddy data deleted."
         kept       = "Buddy data kept (position, skin and audio settings survive a reinstall)."
         done       = "Uninstall complete. Removal usually applies right away (restart sessions if hooks linger)"
@@ -52,7 +52,7 @@ $S = @{
         ask_path   = "プロジェクトフォルダのフルパス"
         not_found  = "フォルダが見つかりません: {0}"
         cancelled  = "中止しました"
-        ask_purge  = "バディのデータ (~/.claude/buddy: 設定・キャッシュ・ログ) も削除しますか？ (y/N)"
+        ask_purge  = "バディのデータ (~/.claude/madomochi: 設定・キャッシュ・ログ) も削除しますか？ (y/N)"
         purged     = "バディのデータを削除しました。"
         kept       = "バディのデータは残しました（位置・スキン・音の設定は再インストール後も生きます）。"
         done       = "アンインストール完了。除去は通常すぐ反映されます（残るようならセッションを張り直してください）"
@@ -95,7 +95,7 @@ if ($Global) {
 }
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-$dataDir = Join-Path $env:USERPROFILE ".claude\buddy"
+$dataDir = Join-Path $env:USERPROFILE ".claude\madomochi"
 $purge = $PurgeData
 if ($interactive -and (Test-Path $dataDir)) {
     $ans = Read-Host $L.ask_purge

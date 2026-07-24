@@ -1,7 +1,6 @@
 """Locate the Claude Code desktop-app window and compute buddy placement.
 
-Pure ctypes — no subprocess. (An earlier version shelled out to tasklist.exe
-every follow tick; one hung tasklist froze the whole tk mainloop, silently.)
+Uses ctypes directly so window tracking never waits on a subprocess.
 """
 
 from __future__ import annotations

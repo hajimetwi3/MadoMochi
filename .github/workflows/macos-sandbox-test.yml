@@ -38,18 +38,37 @@ jobs:
       - name: Run isolated apply and undo tests
         run: python -B tests/test_macos_apply.py
 
+      - name: Run multi-session state tests
+        run: python -B tests/test_session_state.py
+
+      - name: Apply experimental macOS layer
+        id: apply_macos
+        run: python experimental/macos/apply.py
+
+      - name: Run patched unit tests
+        run: python -B tests/test_units.py
+
+      - name: Restore stock checkout
+        if: always() && steps.apply_macos.outcome == 'success'
+        run: python experimental/macos/apply.py --undo
+
       - name: Confirm no test sandbox remains
         if: always()
         shell: bash
         run: |
           shopt -s nullglob
-          leftovers=("${TMPDIR:-/tmp}"/madomochi_apply_test_*)
+          leftovers=(
+            "${TMPDIR:-/tmp}"/madomochi_apply_test_*
+            "${TMPDIR:-/tmp}"/madomochi_session_test_*
+            "${TMPDIR:-/tmp}"/buddy_test_*
+          )
           if (( ${#leftovers[@]} != 0 )); then
             printf 'Temporary sandbox remains: %s\n' "${leftovers[@]}"
             exit 1
           fi
 
       - name: Confirm repository was not modified
+        if: always()
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             git status --short

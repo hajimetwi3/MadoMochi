@@ -1,6 +1,6 @@
 #!/bin/sh
 # Launch MadoMochi in the background (single instance is enforced in-app).
-# UNTESTED (written on Windows) — copy into scripts/ next to buddy.py before use.
+# Installed into scripts/ by experimental/macos/apply.py.
 here="$(cd "$(dirname "$0")/.." && pwd)"
 # a manual start is explicit consent: lift any quit-snooze on auto-revival
 rm -f "$HOME/.claude/madomochi/quit.ts"

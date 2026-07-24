@@ -35,6 +35,8 @@ The patches (all real code, no hand-editing):
   L  reset-position recovery   — also repairs the native window level
   M  menu topmost recovery     — OFF -> ON transition, not a stale no-op
   N  transparent redraw        — invalidate the complete nonopaque view
+  O  initial map recovery      — first Aqua map follows the proven restore path
+  P  Tk 9 safe card            — opaque rendering avoids retained clear pixels
 
 Re-running is safe: applied patches are recognized and skipped.
 """
@@ -47,7 +49,9 @@ import json
 import os
 import py_compile
 import re
+import signal
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -307,8 +311,9 @@ else:
         try:
             import fcntl
 
-            BUDDY_DIR.mkdir(parents=True, exist_ok=True)
+            ensure_private_dir(BUDDY_DIR)
             handle = open(BUDDY_DIR / "singleton.lock", "w")
+            chmod_private(BUDDY_DIR / "singleton.lock")
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
@@ -550,7 +555,138 @@ else:
         # becomes clear. Invalidate the full nonopaque native view.
         self._mac_redraw_surface()  # clears pixels that became transparent""",
     },
+    {
+        "name": "O initial map recovery",
+        "file": BUDDY,
+        "marker": "def _mac_finish_initial_map",
+        "anchor": """        if self.bgm_enabled:
+            if self._hidden:
+                self.bgm.enabled = True  # armed but silent; resume() on unhide
+            else:
+                self.bgm.set_enabled(True)
+
+    # ---------- config ----------""",
+        "replace": """        if self.bgm_enabled:
+            if self._hidden:
+                self.bgm.enabled = True  # armed but silent; resume() on unhide
+            else:
+                self.bgm.set_enabled(True)
+
+        if sys.platform == "darwin":
+            # Force the first Aqua map through the same withdraw/deiconify
+            # path that repaired the native chrome after Claude was restored.
+            # Do this before mainloop so the undecorated window is the first
+            # visible state; never reveal a buddy hidden by _tick_follow.
+            try:
+                self.root.withdraw()
+                self.root.after_idle(self._mac_finish_initial_map)
+            except tk.TclError:
+                pass
+
+    def _mac_finish_initial_map(self) -> None:
+        \"\"\"Map the first Aqua window through the normal recovery path.\"\"\"
+        if sys.platform != "darwin" or getattr(self, "_hidden", False):
+            return
+        try:
+            self.root.overrideredirect(True)
+            self.root.deiconify()
+            self._schedule_topmost_restore()
+        except tk.TclError:
+            pass
+
+    # ---------- config ----------""",
+    },
+    {
+        "name": "P Tk 9 opaque safe card",
+        "file": BUDDY,
+        "marker": "Tk 9 uses the opaque safe card",
+        "anchor": """        px = (self.skin.GRID * self.zoom_n - 1) // self.zoom_d + 1""",
+        "replace": """        self._mac_tk_patchlevel = ""
+        self._mac_safe_card = False
+        if sys.platform == "darwin":
+            try:
+                self._mac_tk_patchlevel = str(
+                    self.root.tk.call("info", "patchlevel")
+                )
+                tk_major = int(self._mac_tk_patchlevel.split(".", 1)[0])
+                self._mac_safe_card = tk_major >= 9
+            except (tk.TclError, TypeError, ValueError):
+                self._mac_safe_card = False
+            if self._mac_safe_card:
+                # Tk 9 uses the opaque safe card: on Aqua 9.0.3, transparent
+                # PhotoImage pixels can retain old backing-store colors.
+                # An opaque Canvas repaints every cleared pixel reliably.
+                self._mac_transparent = False
+                self.root.configure(bg="#1e2528")
+                try:
+                    self.root.attributes("-transparent", False)
+                    self.root.attributes("-alpha", 1.0)
+                except tk.TclError:
+                    pass
+
+        px = (self.skin.GRID * self.zoom_n - 1) // self.zoom_d + 1""",
+    },
 ]
+
+
+def _buddy_process_pattern() -> str:
+    """Match buddy.py as one complete command-line argument."""
+    target = re.escape(str(SCRIPTS / "buddy.py"))
+    return r"(^|[[:space:]])" + target + r"([[:space:]]|$)"
+
+
+_PYTHON_PROCESS_NAME = re.compile(
+    r"python(?:w)?(?:\d+(?:\.\d+)*t?)?", re.IGNORECASE
+)
+
+
+def _is_python_process_name(raw: str) -> bool:
+    """Accept CPython executable names, including framework/free-threaded forms."""
+    name = raw.strip().replace("\\", "/").rsplit("/", 1)[-1]
+    return bool(_PYTHON_PROCESS_NAME.fullmatch(name))
+
+
+def _buddy_process_ids() -> list[int]:
+    """Return only Python PIDs running this checkout's exact buddy.py path."""
+    probe = subprocess.run(
+        ["pgrep", "-f", _buddy_process_pattern()],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if probe.returncode == 1:
+        return []
+    if probe.returncode != 0:
+        raise OSError(f"pgrep failed with exit status {probe.returncode}")
+
+    found = []
+    for token in probe.stdout.split():
+        try:
+            pid = int(token)
+        except ValueError:
+            continue
+        inspected = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "ucomm="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        if inspected.returncode != 0:
+            # A process may naturally disappear between pgrep and ps. If it
+            # still exists but cannot be inspected, fail closed instead of
+            # treating an unknown process as safe to ignore.
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                continue
+            except OSError as e:
+                raise OSError(f"could not inspect candidate PID {pid}") from e
+            raise OSError(f"could not inspect candidate PID {pid}")
+        if _is_python_process_name(inspected.stdout):
+            found.append(pid)
+    return found
 
 
 def _buddy_present() -> bool:
@@ -559,16 +695,7 @@ def _buddy_present() -> bool:
         import ctypes
 
         return bool(ctypes.windll.user32.FindWindowW(None, "MadoMochi"))
-    pattern = re.escape(str(SCRIPTS / "buddy.py"))
-    return (
-        subprocess.run(
-            ["pgrep", "-f", pattern],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        ).returncode
-        == 0
-    )
+    return bool(_buddy_process_ids())
 
 
 def _stop_buddy() -> tuple:
@@ -580,12 +707,22 @@ def _stop_buddy() -> tuple:
     is stamped only when there is actually a buddy here to stop.
     """
     try:
-        if not _buddy_present():
-            return True, "buddy: not running"
+        pids = None
+        if os.name == "nt":
+            if not _buddy_present():
+                return True, "buddy: not running"
+        else:
+            pids = _buddy_process_ids()
+            if not pids:
+                return True, "buddy: not running"
         try:
             buddy_dir = Path.home() / ".claude" / "madomochi"
-            buddy_dir.mkdir(parents=True, exist_ok=True)
-            (buddy_dir / "quit.ts").write_text(str(time.time()), encoding="utf-8")
+            buddy_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            quit_path = buddy_dir / "quit.ts"
+            quit_path.write_text(str(time.time()), encoding="utf-8")
+            if os.name != "nt":
+                os.chmod(buddy_dir, 0o700)
+                os.chmod(quit_path, 0o600)
         except OSError:
             pass
         if os.name == "nt":
@@ -601,14 +738,16 @@ def _stop_buddy() -> tuple:
                     return True, "buddy: stopped"
                 time.sleep(0.2)
             return False, "buddy: close requested but the window is still there"
-        # full-path match only, regex-escaped so the path matches literally
-        pattern = re.escape(str(SCRIPTS / "buddy.py"))
-        subprocess.run(
-            ["pkill", "-f", pattern],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
+        # pgrep identified the exact script argument; ps then restricted the
+        # candidates to Python executables. Editors viewing buddy.py are not
+        # eligible for termination.
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except OSError as e:
+                return False, f"buddy: could not stop PID {pid} ({e})"
         for _ in range(10):  # confirm termination instead of assuming it
             if not _buddy_present():
                 return True, "buddy: stopped"
@@ -616,6 +755,40 @@ def _stop_buddy() -> tuple:
         return False, "buddy: still running after SIGTERM (check by hand)"
     except Exception as e:
         return False, f"buddy: stop skipped ({e})"
+
+
+def _atomic_write_json(path: Path, data: dict, *, expected_raw: bytes) -> None:
+    """Write complete JSON to a private sibling, then replace atomically."""
+    old_mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else 0o600
+    mode = 0o600 if os.name != "nt" else old_mode
+    tmp = path.with_name(
+        f".{path.name}.madomochi-{os.getpid()}-{time.time_ns()}.tmp"
+    )
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        if os.name != "nt":
+            os.chmod(tmp, mode)
+        try:
+            current_raw = path.read_bytes()
+        except FileNotFoundError:
+            current_raw = None
+        if current_raw != expected_raw:
+            raise RuntimeError(
+                "settings changed during this operation; nothing was overwritten"
+            )
+        os.replace(tmp, path)
+        if os.name != "nt":
+            os.chmod(path, 0o600)
+    finally:
+        try:
+            if tmp.is_file():
+                tmp.unlink()
+        except OSError:
+            pass
 
 
 def _unhook_this_checkout() -> str:
@@ -628,7 +801,8 @@ def _unhook_this_checkout() -> str:
     settings_path = Path.home() / ".claude" / "settings.json"
     if not settings_path.is_file():
         return "nothing to unhook (no settings file)"
-    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    raw = settings_path.read_bytes()
+    data = json.loads(raw.decode("utf-8"))
     hook_path = str(SCRIPTS / "hook_entry.py")
     hooks = data.get("hooks")
     removed = 0
@@ -653,10 +827,10 @@ def _unhook_this_checkout() -> str:
         backup = settings_path.with_name(
             settings_path.name + ".bak-undo-" + time.strftime("%Y%m%d-%H%M%S")
         )
-        shutil.copy2(settings_path, backup)
-        settings_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
+        backup.write_bytes(raw)
+        if os.name != "nt":
+            os.chmod(backup, 0o600)
+        _atomic_write_json(settings_path, data, expected_raw=raw)
         return f"removed {removed} entries for this checkout (backup: {backup.name})"
     return "no entries for this checkout were wired"
 
@@ -714,10 +888,10 @@ def _purge_gated(purge_data: bool, stop_ok: bool, unhook_ok: bool) -> list:
 def undo(purge_data: bool, force: bool) -> int:
     """Reverse the apply, verified against the manifest.
 
-    Repository restoration runs on any OS. The external side effects
-    (stopping the buddy, unhooking, purging data) are scoped to this
-    checkout and, off macOS, require --force — so undoing a test copy
-    can never touch the installation you actually use.
+    Repository restoration runs on any OS. External side effects are
+    disabled off macOS unless --force. Hook removal and POSIX process
+    matching target this checkout; runtime-data purge is intentionally
+    shared, so callers must use --purge-data only for the active install.
     """
     external_ok = sys.platform == "darwin" or force
     problems: list = []
@@ -770,17 +944,17 @@ def undo(purge_data: bool, force: bool) -> int:
                     print(f"    {why}")
                 return 1
             return 0
-        # applied by an older scaffold: there is no baseline to compare
+        # applied by an older experimental version: there is no baseline to compare
         # against, so FIRST preserve everything the tree currently holds,
         # then restore best-effort - and never claim a verified success
-        print("no manifest found (applied by an older scaffold version).")
+        print("no manifest found (applied by an older experimental version).")
         try:
             for name in (*_MANAGED_SOURCES, *_MANAGED_COPIES):
                 p = SCRIPTS / name
                 if not p.is_file():
                     continue
                 # skip files identical to a known reference: the stored
-                # original for sources, this folder's scaffold for copies
+                # original for sources, this folder's support file for copies
                 ref = (BACKUP / name) if name in _MANAGED_SOURCES else (HERE / name)
                 if ref.is_file() and _sha(ref) == _sha(p):
                     continue
@@ -1056,7 +1230,7 @@ def main() -> int:
         print(f"  FAILED:          {name} - {why}")
 
     if failed:
-        print("\nNothing was written. This scaffold no longer matches the")
+        print("\nNothing was written. This macOS patch set no longer matches the")
         print("sources (they may have moved on) - please open an issue.")
         return 1
     if args.check:
@@ -1077,16 +1251,65 @@ def main() -> int:
         print("or a fresh download).")
         return 1
 
-    # baseline guard: user edits must never be silently promoted into the
-    # manifest baseline (a later --undo would then drop them)
+    # Bind every reused backup to the current tree before it can become the
+    # new manifest baseline.  A matching manifestless backup can be the
+    # harmless residue of an interrupted first apply and is safe to resume;
+    # a differing one may belong to another release and must never be
+    # silently promoted into an apparently verified undo point.
+    manifest_data = None
     if MANIFEST.is_file():
         try:
-            m_originals, m_applied, _ = _read_manifest()
+            manifest_data = _read_manifest()
         except Exception as e:
             print(f"\nRefusing to apply: the existing manifest is invalid ({e}).")
-            print("Nothing was written. If you know scripts_backup_macos/ is")
-            print("intact, delete its manifest.json and re-run.")
+            print("Nothing was written. Use a freshly downloaded and extracted")
+            print("MadoMochi folder for this experimental macOS version.")
             return 1
+        m_originals, _m_applied, _m_created = manifest_data
+        altered = [
+            n for n, digest in m_originals.items()
+            if not (BACKUP / n).is_file() or _sha(BACKUP / n) != digest
+        ]
+        if altered:
+            print("\nRefusing to apply: the existing backup is incomplete or altered:")
+            for name in altered:
+                print(f"    {name}")
+            print("Nothing was written. Keep this folder if it contains files you")
+            print("need, then continue from a fresh MadoMochi download.")
+            return 1
+
+    copies_present = any((SCRIPTS / n).is_file() for n in _MANAGED_COPIES)
+    if manifest_data is None and (done or copies_present):
+        print("\nRefusing to apply: this already-patched macOS tree has no valid")
+        print("manifest, so its backup cannot be proved to belong to this release.")
+        print("Nothing was written. Keep this folder if it contains files you need,")
+        print("then continue from a freshly downloaded MadoMochi folder.")
+        return 1
+
+    if BACKUP.is_dir() and not done and not copies_present:
+        if manifest_data is not None:
+            originals = manifest_data[0]
+            stale = [
+                n for n, digest in originals.items()
+                if _sha(SCRIPTS / n) != digest
+            ]
+        else:
+            stale = [
+                n for n in _MANAGED_SOURCES
+                if not (BACKUP / n).is_file()
+                or _sha(BACKUP / n) != _sha(SCRIPTS / n)
+            ]
+        if stale:
+            print("\nRefusing to apply: scripts_backup_macos/ does not belong to")
+            print("the current unpatched sources: " + ", ".join(stale))
+            print("Nothing was written. Keep this folder if it contains files you")
+            print("need, then download and extract a fresh MadoMochi folder.")
+            return 1
+
+    # baseline guard: user edits must never be silently promoted into the
+    # manifest baseline (a later --undo would then drop them)
+    if manifest_data is not None:
+        m_originals, m_applied, _ = manifest_data
         try:
             for name in _MANAGED_SOURCES:
                 cur = _sha(SCRIPTS / name)
@@ -1098,32 +1321,8 @@ def main() -> int:
             print(f"\nRefusing to apply: could not preserve edited files ({e}).")
             print("Nothing was written.")
             return 1
-    elif done or any((SCRIPTS / n).is_file() for n in _MANAGED_COPIES):
-        # patched by an older scaffold (no manifest): the sources here have
-        # unknown provenance, so preserve any that differ from the stored
-        # originals before this run establishes a fresh baseline
-        lost = [n for n in _MANAGED_SOURCES if not (BACKUP / n).is_file()]
-        if done and lost:
-            print("\nRefusing to apply: this tree was patched by an older scaffold")
-            print("and its backup folder is missing: " + ", ".join(lost))
-            print("Nothing was written. Restore the stock sources from git or a")
-            print("fresh download, then apply again.")
-            return 1
-        try:
-            for name in _MANAGED_SOURCES:
-                p = SCRIPTS / name
-                keep = BACKUP / name
-                if keep.is_file() and _sha(keep) == _sha(p):
-                    continue
-                prev = _save_prev(p)
-                print(f"  note: provenance of scripts/{name} is unknown (no")
-                print(f"        manifest) - kept as {prev.relative_to(ROOT)}")
-        except OSError as e:
-            print(f"\nRefusing to apply: could not preserve current files ({e}).")
-            print("Nothing was written.")
-            return 1
 
-    # ---- write phase (transactional: any failure rolls everything back) --
+    # ---- create/reuse the pristine source backup before managed writes ----
     BACKUP.mkdir(exist_ok=True)
     for target in {p["file"] for p in PATCHES} | {SCRIPTS / "window_pos.py"}:
         keep = BACKUP / target.name
@@ -1149,6 +1348,7 @@ def main() -> int:
         _snap(f)
     _snap(MANIFEST)  # a stale manifest must not survive a rollback
 
+    # ---- transactional managed write phase -------------------------------
     try:
         for src, dst, make_x in COPIES:
             if dst in pre and pre[dst][0] != src.read_bytes():  # noqa: index 0 = bytes
@@ -1192,7 +1392,7 @@ def main() -> int:
                 )
         print("  syntax check: OK")
 
-        # manifest: the ground truth --undo verifies against. Complete by
+        # manifest: the reference --undo verifies against. Complete by
         # construction - a missing file is a hard failure that rolls the
         # whole run back, never a silently smaller manifest
         MANIFEST.write_text(
@@ -1241,8 +1441,8 @@ def main() -> int:
     print(
         "\nDone. Next steps:\n"
         "  1. optional Mac window support: python3 -m pip install pyobjc-framework-Quartz\n"
-        "     (window following plus the native transparent-redraw repair;\n"
-        "      without it the buddy parks in the desktop corner automatically)\n"
+        "     (window following, plus native redraw for the Tk 8 transparent path;\n"
+        "      Tk 9 uses the safe card; without it the buddy parks automatically)\n"
         "  2. run the suite:              python3 -B tests/test_units.py\n"
         "  3. wire the hooks:             python3 scripts/install_hooks.py\n"
         "  4. start:                      ./scripts/start_buddy.sh\n"

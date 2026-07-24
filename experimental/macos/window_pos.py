@@ -1,12 +1,12 @@
 """
-macOS window tracking for MadoMochi — UNTESTED, written on Windows.
+Experimental macOS window tracking for MadoMochi.
 
 Same public surface as scripts/window_pos.py:
 
     BUDDY_TITLE
     place_bottom_right_of_claude(w, h, margin_x=..., margin_above_prompt=...)
 
-Design (review-hardened):
+Design:
 - Full window-list sweeps run at most every RESCAN_SEC to find the
   Claude window and remember its kCGWindowNumber.
 - Once a window is tracked, its bounds are re-read on EVERY call via

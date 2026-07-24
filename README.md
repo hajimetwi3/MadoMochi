@@ -13,6 +13,8 @@ Code hooks.
 > frameless, chroma-key-transparent, always-on-top window that tracks the
 > Claude Code window and reads a status file written by hooks.
 
+<img width="600" alt="image" src="./assets/skins_gallery.jpg" />  
+
 [▶ Watch the MadoMochi demo video](https://x.com/hajimetwi3/status/2078704325292179829)
 
 ## Requirements

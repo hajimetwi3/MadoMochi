@@ -12,6 +12,8 @@ Claude Code とチャットしている間、ウィンドウの入力欄右上�
 > **フックで状態を書き → 最前面の透過ウィンドウが Claude ウィンドウに追従してアニメ**、
 > という形にしています。
 
+<img width="600" alt="image" src="./assets/skins_gallery.jpg" />  
+
 [▶ MadoMochiのデモ動画を見る](https://x.com/hajimetwi3/status/2078704325292179829)
 
 ## 状態一覧

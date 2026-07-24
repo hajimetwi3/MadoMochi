@@ -14,7 +14,7 @@ MadoMochi — always-on-top floating pixel companion for Claude Code.
 - Skins: any scripts/skins/*.py matching the contract, right-click to switch
 - Settings dialog (right-click > Settings…): size / walk / premium / roam sliders
   with a factory-reset button, plus a 60/120/180s showcase demo that runs
-  the whole repertoire with music (for recording GIFs)
+  the whole repertoire with music while staying in the showcase area
 - Time-of-day: late-night dozing, one morning workout, longer Friday parties
 - Retro BGM: 12 built-in chiptune loops (right-click music menu),
   synthesized with the stdlib and looped gaplessly via winmm waveOut;
@@ -60,6 +60,11 @@ from retro_bgm import (  # noqa: E402
     mood_led_mode,
     mood_led_colors,
 )
+from session_state import (  # noqa: E402
+    SessionStore,
+    chmod_private,
+    ensure_private_dir,
+)
 
 # ---- skins: any scripts/skins/*.py exposing the contract below is selectable ----
 SKINS_DIR = Path(__file__).resolve().parent / "skins"
@@ -78,16 +83,21 @@ def discover_skins() -> dict:
             if all(hasattr(mod, a) for a in SKIN_CONTRACT):
                 skins[f.stem] = mod
         except Exception:
-            continue  # a broken skin file must never take the buddy down
+            continue  # one import failure must not stop discovery of other skins
     return skins
 
 BUDDY_DIR = Path(os.environ.get("CLAUDE_BUDDY_DIR", Path.home() / ".claude" / "madomochi"))
 STATUS_PATH = Path(os.environ.get("CLAUDE_BUDDY_STATUS", BUDDY_DIR / "status.json"))
+STATE_DB_PATH = Path(
+    os.environ.get("MADOMOCHI_STATE_DB", BUDDY_DIR / "sessions.sqlite3")
+)
 CONFIG_PATH = BUDDY_DIR / "config.json"
 CHROMA = "#ff00ff"
 ANCHOR_MARGIN_X = 24
 ANCHOR_MARGIN_ABOVE_PROMPT = 96
 FOLLOW_MS = 250
+ERROR_LOG_REPEAT_SEC = 60.0
+ERROR_LOG_SIGNATURE_LIMIT = 32
 
 # idle walk
 WALK_DIST = 160          # px to wander left
@@ -132,6 +142,11 @@ MOOD_DECAY = {
     "think": (600.0, "idle"),
     "alert": (900.0, "idle"),
 }
+
+# A completed session gets a short provider-wide celebration even when another
+# session keeps the durable aggregate at WORKING.  This is a UI-only override:
+# SQLite remains authoritative and the latest aggregate is restored afterward.
+SESSION_DONE_FLASH_SEC = 3.0
 
 # work staleness (crash safety net): measured from the LAST hook event, and
 # tool-aware — a silent 20-minute Bash build is normal, a silent Edit is not
@@ -229,7 +244,10 @@ class FloatBuddy:
         self._last_status = ""
         self._status_mtime = -1
         self._status_tool = ""
+        self._status_session = ""
         self._status_event_at = time.time()
+        self._aggregate_mood = "idle"
+        self._session_done_until = 0.0
         # rendered-frame cache keyed by pixel content (sprite edits stay safe:
         # different pixels -> different key). FIFO-capped.
         self._img_cache: dict[bytes, tk.PhotoImage] = {}
@@ -270,6 +288,22 @@ class FloatBuddy:
         # UI language: None = follow the Windows display language
         self.lang_pref: str | None = None
         self._born = time.time()  # SE stays quiet during startup catch-up
+        self._session_store = None
+        self._last_signal_id = 0
+        self._session_db_live = True
+        self._last_db_signature = None
+        # Repeated render failures must not turn a bounded log into an
+        # unbounded stream of physical writes.  Track call-site signatures;
+        # changing exception messages from the same failing code are one error.
+        self._error_log_state: dict[tuple, tuple[float, int]] = {}
+        try:
+            self._session_store = SessionStore(STATE_DB_PATH, provider="claude")
+            # Signals describe moments, not durable state.  Starting the UI
+            # must never replay sounds produced while it was closed.
+            self._last_signal_id = self._session_store.latest_signal_id()
+        except Exception:
+            # status.json remains a complete, backwards-compatible fallback.
+            self._session_store = None
         self._skin_icons: dict = {}  # name -> tiny menu PhotoImage (lazy)
         self.show = None          # showcase-demo state (settings dialog)
         self._show_after = None
@@ -410,7 +444,7 @@ class FloatBuddy:
 
     def _save_config(self) -> None:
         try:
-            BUDDY_DIR.mkdir(parents=True, exist_ok=True)
+            ensure_private_dir(BUDDY_DIR)
             CONFIG_PATH.write_text(
                 json.dumps(
                     {
@@ -439,6 +473,7 @@ class FloatBuddy:
                 ),
                 encoding="utf-8",
             )
+            chmod_private(CONFIG_PATH)
         except Exception:
             pass
 
@@ -636,7 +671,14 @@ class FloatBuddy:
         return STATUS_LABEL.get(mood, "IDLE")
 
     def _set_lang(self, code: str) -> None:
-        if code not in LANG_LABEL or code == self.lang:
+        if code not in LANG_LABEL:
+            return
+        # Selecting the auto-detected language is still an explicit choice.
+        # Persist it even when no visible rebuild is necessary (otherwise an
+        # English system could never pin English before its locale changes).
+        if code == self.lang:
+            self.lang_pref = code
+            self._save_config()
             return
         self.lang = code
         self.lang_pref = code  # explicit pick wins over the system language
@@ -880,6 +922,10 @@ class FloatBuddy:
             self.bgm.volume = saved["volume"]
             self.bgm.track_id = saved["track"]
         self.bgm._user_pick = saved["user_pick"]
+        # Deliberately end at IDLE instead of replaying the pre-show aggregate.
+        # A missing completion hook can leave an old WORKING state alive for
+        # minutes; only a genuinely newer status event should replace this
+        # manual demo boundary.
         self._set_mood("idle")
         self._sched_reset()
 
@@ -1216,8 +1262,10 @@ class FloatBuddy:
             pass
         try:
             # deliberate quit: snooze the hooks' prompt-revival for a while
-            BUDDY_DIR.mkdir(parents=True, exist_ok=True)
-            (BUDDY_DIR / "quit.ts").write_text(str(time.time()), encoding="utf-8")
+            ensure_private_dir(BUDDY_DIR)
+            quit_path = BUDDY_DIR / "quit.ts"
+            quit_path.write_text(str(time.time()), encoding="utf-8")
+            chmod_private(quit_path)
         except Exception:
             pass
         self.root.destroy()
@@ -1230,7 +1278,9 @@ class FloatBuddy:
         self.canvas.itemconfigure(self.badge_bg, state=state)
         self.canvas.itemconfigure(self.badge_text, state=state)
 
-    def _set_mood(self, mood: str, demo: bool = False) -> None:
+    def _set_mood(
+        self, mood: str, demo: bool = False, signal_backed: bool = False
+    ) -> None:
         mood = mood if mood in STATUS_LABEL else "idle"
         if mood != self.mood:
             self.mood = mood
@@ -1247,9 +1297,12 @@ class FloatBuddy:
                 self.bgm_track = self.bgm.track_id
             except Exception:
                 pass
-            # punctuating moments get a one-shot; startup catch-up stays quiet
+            # Punctuating moments get a one-shot; startup catch-up stays quiet.
+            # A session-aware hook publishes these via the signal table, even
+            # when another session keeps the visible aggregate unchanged.
             if (
                 mood in ("happy", "error", "alert")
+                and not signal_backed
                 and not self._hidden
                 and time.time() - self._born > 2.0
             ):
@@ -1372,12 +1425,48 @@ class FloatBuddy:
 
     def _log_error(self) -> None:
         try:
-            BUDDY_DIR.mkdir(parents=True, exist_ok=True)
+            exc_type, _exc, tb = sys.exc_info()
+            frames = tuple(
+                (frame.filename, frame.lineno, frame.name)
+                for frame in traceback.extract_tb(tb)
+            )
+            signature = (
+                getattr(exc_type, "__module__", ""),
+                getattr(exc_type, "__qualname__", ""),
+                frames,
+            )
+            now = time.monotonic()
+            state = getattr(self, "_error_log_state", None)
+            if not isinstance(state, dict):
+                state = {}
+                self._error_log_state = state
+            previous = state.get(signature)
+            if previous is not None and now - previous[0] < ERROR_LOG_REPEAT_SEC:
+                state[signature] = (previous[0], previous[1] + 1)
+                return
+            suppressed = previous[1] if previous is not None else 0
+            if signature not in state and len(state) >= ERROR_LOG_SIGNATURE_LIMIT:
+                oldest = min(state, key=lambda key: state[key][0])
+                state.pop(oldest, None)
+            # Update before touching the filesystem.  A read-only/full disk
+            # must not cause the render loop to retry the write every frame.
+            state[signature] = (now, 0)
+
+            ensure_private_dir(BUDDY_DIR)
             log = BUDDY_DIR / "buddy_err.log"
             if log.is_file() and log.stat().st_size > 1_000_000:
-                log.replace(log.with_suffix(".log.old"))
+                old_log = log.with_suffix(".log.old")
+                log.replace(old_log)
+                chmod_private(old_log)
+            repeat_note = (
+                f" [suppressed {suppressed} repeat(s)]" if suppressed else ""
+            )
             with log.open("a", encoding="utf-8") as f:
-                f.write(f"--- {datetime.now().isoformat()}\n{traceback.format_exc()}\n")
+                f.write(
+                    f"--- {datetime.now().isoformat()}{repeat_note}\n"
+                    f"{traceback.format_exc()}\n"
+                )
+            chmod_private(log)
         except Exception:
             pass
 
@@ -1420,10 +1509,99 @@ class FloatBuddy:
         if time.time() - self.mood_since > limit:
             self._set_mood(nxt)
 
+    def _start_session_done_flash(self) -> bool:
+        """Temporarily celebrate one session without changing stored state."""
+        if self._aggregate_mood in ("alert", "error"):
+            return False
+        if self.mood in ("alert", "error"):
+            return False
+
+        now = time.time()
+        self._session_done_until = now + SESSION_DONE_FLASH_SEC
+        if self.mood == "happy":
+            # A second completion during an existing celebration earns a fresh
+            # animation and a full display interval.
+            self.frame = 0
+            self.mood_since = now
+        else:
+            # The signal consumer handles the one-shot sound separately.
+            self._set_mood("happy", signal_backed=True)
+        return True
+
+    def _expire_session_done_flash(self, now: float | None = None) -> bool:
+        """Restore the newest aggregate when the temporary DONE display ends."""
+        stamp = time.time() if now is None else float(now)
+        if self._session_done_until <= 0.0 or stamp < self._session_done_until:
+            return False
+        self._session_done_until = 0.0
+        self._set_mood(self._aggregate_mood, signal_backed=True)
+        return True
+
+    def _consume_session_signals(self, rows: list[dict] | None = None) -> None:
+        """Deliver one coalesced cue for newly committed session events."""
+        if self._session_store is None:
+            return
+        try:
+            if rows is None:
+                rows = self._session_store.signals_after(self._last_signal_id)
+            if not rows:
+                return
+            self._last_signal_id = max(int(row["id"]) for row in rows)
+            if self._hidden or time.time() - self._born <= 2.0:
+                return
+            kinds = {
+                str(row.get("kind") or "")
+                for row in rows
+                if str(row.get("kind") or "") in ("happy", "error", "alert")
+            }
+            if not kinds:
+                return
+            # Bursts can contain several short-lived hook processes.  Avoid an
+            # overlapping sound pile-up while retaining the most urgent cue.
+            kind = max(kinds, key={"happy": 1, "error": 2, "alert": 3}.get)
+            if kind == "happy":
+                self._start_session_done_flash()
+            self.bgm.play_se(kind)
+        except Exception:
+            # Sound delivery is best-effort and must never stop the UI poller.
+            pass
+
+    def _apply_status_payload(self, data: dict, *, signal_backed: bool) -> None:
+        self._status_tool = data.get("tool") or ""
+        previous_event_at = self._status_event_at
+        try:
+            event_at = datetime.fromisoformat(data["updatedAt"]).timestamp()
+        except Exception:
+            event_at = time.time()
+        self._status_event_at = event_at
+        selected_session = str(data.get("session") or "")
+        session_changed = selected_session != self._status_session
+        self._status_session = selected_session
+        mood = data.get("mood") or "idle"
+        self._aggregate_mood = mood
+        if mood in ("alert", "error"):
+            # User action and failures must never wait behind a celebration.
+            self._session_done_until = 0.0
+            self._set_mood(mood, signal_backed=signal_backed)
+        elif self._session_done_until > time.time():
+            # Keep accepting aggregate updates underneath the temporary DONE.
+            # The newest one, rather than a captured/stale value, is restored.
+            pass
+        else:
+            self._session_done_until = 0.0
+            self._set_mood(mood, signal_backed=signal_backed)
+        if mood == "alert" and (session_changed or event_at != previous_event_at):
+            # Alert roaming belongs to the selected request.  Switching from
+            # one request to another (or seeing a new request in the same
+            # session) must use that request's own age.
+            self.mood_since = min(time.time(), event_at)
+
     def _tick_status(self) -> None:
         if time.time() < self.demo_until:
             self.root.after(350, self._tick_status)
             return
+        self._expire_session_done_flash()
+        read_new_file = False
         try:
             mtime = STATUS_PATH.stat().st_mtime_ns
             if mtime != self._status_mtime:
@@ -1432,16 +1610,49 @@ class FloatBuddy:
                 if raw != self._last_status:
                     self._last_status = raw
                     data = json.loads(raw)
-                    self._status_tool = data.get("tool") or ""
                     try:
-                        self._status_event_at = datetime.fromisoformat(
-                            data["updatedAt"]
-                        ).timestamp()
-                    except Exception:
-                        self._status_event_at = time.time()
-                    self._set_mood(data.get("mood") or "idle")
+                        signal_backed = int(data.get("stateVersion") or 0) > 0
+                    except (TypeError, ValueError):
+                        signal_backed = False
+                    self._session_db_live = signal_backed
+                    self._apply_status_payload(
+                        data, signal_backed=signal_backed
+                    )
+                    if signal_backed:
+                        self._last_db_signature = (
+                            data.get("stateVersion"),
+                            data.get("mood"),
+                            data.get("session"),
+                            data.get("updatedAt"),
+                            data.get("tool"),
+                        )
+                    read_new_file = True
         except Exception:
             pass
+
+        # status.json changes only on hook events.  Re-evaluate the database
+        # too, so when (for example) an old WAITING state expires, the next
+        # highest-priority live session can take over without another hook.
+        polled_signals: list[dict] = []
+        if self._session_store is not None and self._session_db_live:
+            try:
+                happy_sec = 20.0 if self._now_flavor()["friday"] else 10.0
+                data, polled_signals = self._session_store.poll(
+                    self._last_signal_id, happy_sec=happy_sec
+                )
+                signature = (
+                    data.get("stateVersion"),
+                    data.get("mood"),
+                    data.get("session"),
+                    data.get("updatedAt"),
+                    data.get("tool"),
+                )
+                if not read_new_file and signature != self._last_db_signature:
+                    self._last_db_signature = signature
+                    self._apply_status_payload(data, signal_backed=True)
+            except Exception:
+                pass
+        self._consume_session_signals(polled_signals)
         self.root.after(350, self._tick_status)
 
     def run(self) -> None:
@@ -1463,7 +1674,7 @@ def main() -> int:
         print("MadoMochi is already running.")
         return 0
 
-    BUDDY_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(BUDDY_DIR)
     print(f"MadoMochi floating - status={STATUS_PATH}")
     print("Drag / click to poke / right-click menu / double-click demo / Esc quit")
     FloatBuddy(scale=args.scale).run()

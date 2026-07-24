@@ -2,20 +2,24 @@
 
 Run with the live buddy STOPPED (this creates its own window):
     powershell -File scripts/stop_buddy.ps1
-    python tests/test_units.py
+    python -B tests/test_units.py
     powershell -File scripts/start_buddy.ps1
 
 Structure: each test_* function receives a freshly reset FloatBuddy, so
 tests cannot leak state into each other.
 """
 
+import io
 import json
 import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 # hermetic suite: point every buddy path at a throwaway home BEFORE the
@@ -27,6 +31,7 @@ os.environ["CLAUDE_BUDDY_STATUS"] = str(Path(_TEST_HOME) / "status.json")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import i18n  # noqa: E402
 from buddy import FloatBuddy, discover_skins  # noqa: E402
+from session_state import SessionStore, hashed_session_id  # noqa: E402
 
 MOODS = ["idle", "listen", "think", "work", "happy", "error", "alert",
          "sleep", "walk_l", "walk_r", "poke", "gym", "soccer"]
@@ -34,8 +39,9 @@ MOODS = ["idle", "listen", "think", "work", "happy", "error", "alert",
 # skins that must always ship; extra local-only skins may also be present
 # and their absence must not fail the suite
 CORE_SKINS = {
-    "neko", "neko_sakura", "penguin", "usagi", "obake", "slime", "slime_big",
-    "kaeru", "shiba", "fukurou", "tako", "kinoko", "onigiri",
+    "agent_2nd", "agent_one", "neko", "neko_sakura", "penguin", "usagi",
+    "obake", "slime", "slime_big", "kaeru", "shiba", "fukurou", "tako",
+    "kinoko", "onigiri",
 }
 
 
@@ -55,7 +61,10 @@ def reset(b: FloatBuddy) -> None:
     b.roam_after = 120.0
     b._morning_gym_day = ""
     b._status_tool = ""
+    b._status_session = ""
     b._status_event_at = time.time()
+    b._aggregate_mood = "idle"
+    b._session_done_until = 0.0
     # BGM stays silent for the whole suite: the player is never enabled here
     b.bgm_enabled = False
     b.bgm.enabled = False
@@ -76,6 +85,10 @@ def reset(b: FloatBuddy) -> None:
     b.bgm.se_enabled = False
     b.park_when_hidden = False
     b.show = None
+    try:
+        b._last_signal_id = b._session_store.latest_signal_id()
+    except Exception:
+        pass
     b.__dict__.pop("_follow_xy", None)  # drop any per-test method shadow
     b._set_hidden(False)
     b._set_scale(2.4)
@@ -93,6 +106,16 @@ def test_all_skins_render(b):
                 mx = max(max(r) for r in buf)
                 assert mx < len(mod.PALETTE), (name, m, t, mx)
                 mod.frame_hold(m, t)
+
+
+def test_agent_2nd_eye_gap(b):
+    mod = discover_skins()["agent_2nd"]
+    for mood in MOODS:
+        for t in range(64):
+            buf = mod.build_frame(mood, t)
+            for y in range(24, 44):
+                assert buf[y][31] != mod.FACE and buf[y][32] != mod.FACE, \
+                    (mood, t, y, "eyes joined across the navy center gap")
 
 
 def test_night_doze(b):
@@ -215,6 +238,8 @@ def test_work_staleness_tool_aware(b):
 
 
 def test_mood_decay_chain(b):
+    # Exercise the normal happy timeout; Friday intentionally doubles it.
+    os.environ["CLAUDE_BUDDY_FAKE_WDAY"] = "2"
     b.mood = "listen"
     b.mood_since = time.time() - 4
     b._apply_decay()
@@ -486,13 +511,504 @@ def test_hook_scrub(b):
     assert "hooks" not in s2  # a fully-emptied hooks table is dropped
 
 
+def test_project_hook_local_migration(b):
+    import install_hooks as ih
+
+    project = Path(_TEST_HOME) / "project_hook_migration"
+    claude_dir = project / ".claude"
+    claude_dir.mkdir(parents=True)
+    shared = claude_dir / "settings.json"
+    local = claude_dir / "settings.local.json"
+    backup_root = Path(_TEST_HOME) / "settings_backups"
+
+    ours = {
+        "type": "command",
+        "command": "pythonw",
+        "args": ["C:/old/MadoMochi/scripts/hook_entry.py", "--hajimetwi3-buddy-hook"],
+    }
+    foreign = {
+        "type": "command",
+        "command": "other-tool",
+        "args": ["keep-me"],
+    }
+    shared.write_text(json.dumps({
+        "model": "keep-model",
+        "hooks": {"Stop": [{"hooks": [ours, foreign]}]},
+    }), encoding="utf-8")
+
+    old_backup_root = ih.BACKUP_ROOT
+    try:
+        ih.BACKUP_ROOT = backup_root
+        ih.install_project(project)
+
+        shared_data = json.loads(shared.read_text(encoding="utf-8"))
+        assert shared_data["model"] == "keep-model"
+        assert shared_data["hooks"]["Stop"][0]["hooks"] == [foreign]
+        local_data = json.loads(local.read_text(encoding="utf-8"))
+        installed = [
+            h
+            for groups in local_data["hooks"].values()
+            for group in groups
+            for h in group["hooks"]
+        ]
+        assert installed and all("--hajimetwi3-buddy-hook" in h["args"] for h in installed)
+        assert all(str(ih.HOOK_SCRIPT) in h["args"] for h in installed)
+        assert not list(claude_dir.glob("*.bak-*")), \
+            "machine-specific backups must stay outside the project"
+
+        # Repeated installs remain bounded to five backups per target.
+        for _ in range(7):
+            ih.install_project(project)
+        buckets = [p for p in backup_root.iterdir() if p.is_dir()]
+        assert len(buckets) == 2  # shared migration + local settings
+        backup_counts = sorted(len(list(p.glob("*.bak"))) for p in buckets)
+        assert backup_counts == [1, ih.BACKUP_KEEP], backup_counts
+        assert not list(claude_dir.glob(".*.madomochi-*.tmp"))
+        if os.name != "nt":
+            assert ih.stat.S_IMODE(local.stat().st_mode) == 0o600
+            for bucket in buckets:
+                assert ih.stat.S_IMODE(bucket.stat().st_mode) == 0o700
+                for saved in (*bucket.glob("*.bak"), bucket / "target.txt"):
+                    assert ih.stat.S_IMODE(saved.stat().st_mode) == 0o600
+
+        ih.uninstall_project(project)
+        after = json.loads(local.read_text(encoding="utf-8"))
+        assert "hooks" not in after
+        shared_after = json.loads(shared.read_text(encoding="utf-8"))
+        assert shared_after["hooks"]["Stop"][0]["hooks"] == [foreign]
+    finally:
+        ih.BACKUP_ROOT = old_backup_root
+
+
+def test_settings_save_failure_is_atomic(b):
+    import install_hooks as ih
+    from unittest.mock import patch
+
+    root = Path(_TEST_HOME) / "settings_atomic_failure"
+    target = root / "settings.json"
+    target.parent.mkdir(parents=True)
+    target.write_text('{"model":"keep-exactly"}\n', encoding="utf-8")
+    before = target.read_bytes()
+    old_backup_root = ih.BACKUP_ROOT
+    try:
+        ih.BACKUP_ROOT = Path(_TEST_HOME) / "settings_atomic_failure_backups"
+        with patch.object(ih.os, "replace", side_effect=PermissionError("locked")):
+            try:
+                ih.install(target)
+            except PermissionError:
+                pass
+            else:
+                raise AssertionError("a failed atomic replace must be reported")
+        assert target.read_bytes() == before
+        assert not list(root.glob(".*.madomochi-*.tmp"))
+    finally:
+        ih.BACKUP_ROOT = old_backup_root
+
+
+def test_settings_concurrent_change_is_not_overwritten(b):
+    import install_hooks as ih
+    from unittest.mock import patch
+
+    root = Path(_TEST_HOME) / "settings_concurrent_change"
+    target = root / "settings.json"
+    target.parent.mkdir(parents=True)
+    target.write_text('{"model":"initial"}\n', encoding="utf-8")
+    concurrent = b'{"model":"changed-by-another-process"}\n'
+    old_backup_root = ih.BACKUP_ROOT
+    real_save = ih._save
+
+    def race_save(path, settings, **kwargs):
+        target.write_bytes(concurrent)
+        return real_save(path, settings, **kwargs)
+
+    try:
+        ih.BACKUP_ROOT = Path(_TEST_HOME) / "settings_concurrent_backups"
+        with patch.object(ih, "_save", side_effect=race_save):
+            try:
+                ih.install(target)
+            except RuntimeError as exc:
+                assert "settings changed during this operation" in str(exc)
+            else:
+                raise AssertionError("a concurrent settings update was overwritten")
+        assert target.read_bytes() == concurrent
+        assert not list(root.glob(".*.madomochi-*.tmp"))
+    finally:
+        ih.BACKUP_ROOT = old_backup_root
+
+
+def test_windows_launcher_and_purge_guards(b):
+    root = Path(__file__).resolve().parent.parent
+    start = (root / "scripts" / "start_buddy.ps1").read_text(encoding="utf-8")
+    stop = (root / "scripts" / "stop_buddy.ps1").read_text(encoding="utf-8")
+    install = (root / "install.ps1").read_text(encoding="utf-8")
+    uninstall = (root / "uninstall.ps1").read_text(encoding="utf-8")
+
+    assert '$ErrorActionPreference = "Stop"' in start
+    assert "-PassThru -ErrorAction Stop" in start
+    assert "Could not launch MadoMochi" in start
+    assert install.count("if ($LASTEXITCODE -ne 0) { exit 1 }") >= 3
+    for wrapper in (install, uninstall):
+        assert "if ($Global -and $Project)" in wrapper
+        assert wrapper.index("if ($Global -and $Project)") < wrapper.index(
+            "$py = Get-Command python"
+        )
+
+    assert "FindWindow" in stop and "PostMessage" in stop
+    assert "still running after the close request" in stop
+    assert stop.rstrip().endswith("exit 1")
+    assert "$stopOk = ($LASTEXITCODE -eq 0)" in uninstall
+    assert uninstall.index("if (-not $stopOk)") < uninstall.index(
+        "Remove-Item -LiteralPath $dataDir -Recurse -Force"
+    )
+
+
 def test_status_write_atomic(b):
     import hook_entry as he
-    he.write_status("happy", "unit-test", tool="", event="Test")
+    he.SESSION_STORE.clear()
+    he.write_status(
+        "happy", "unit-test", tool="", event="Test", session_id="unit-session"
+    )
     data = json.loads(he.STATUS_PATH.read_text(encoding="utf-8"))
     assert data["mood"] == "happy" and data["event"] == "Test"
+    assert data["provider"] == "claude" and data["sessionCount"] == 1
+    assert data["session"] == hashed_session_id("unit-session")[:12]
     # the per-process temp file never lingers
     assert list(he.STATUS_PATH.parent.glob("status.*.tmp")) == []
+
+
+def test_manual_status_reports_replace_failure(b):
+    import contextlib
+    import io
+    import set_status
+    from unittest.mock import patch
+
+    target = Path(_TEST_HOME) / "manual_status_failure.json"
+    saved_argv = sys.argv
+    sys.argv = ["set_status.py", "--path", str(target), "--mood", "work"]
+    try:
+        stderr = io.StringIO()
+        with patch.object(Path, "replace", side_effect=PermissionError("locked")):
+            with contextlib.redirect_stderr(stderr):
+                code = set_status.main()
+    finally:
+        sys.argv = saved_argv
+    assert code == 1
+    assert "could not update" in stderr.getvalue()
+    assert not target.exists()
+    assert not target.with_suffix(".json.tmp").exists()
+
+
+def test_session_store_priority_and_isolation(b):
+    store = SessionStore(Path(_TEST_HOME) / "priority.sqlite3")
+    base = time.time()
+
+    result = store.record_event(
+        session_id="session-a", mood="work", message="working",
+        tool="Bash", event="PreToolUse", now=base,
+    )
+    assert result.aggregate["mood"] == "work"
+
+    # A short-lived helper ending must not put an active main session to sleep.
+    result = store.record_event(
+        session_id="helper", mood="sleep", message="session end",
+        tool="", event="SessionEnd", now=base + 0.1,
+    )
+    assert result.aggregate["mood"] == "work"
+
+    result = store.record_event(
+        session_id="session-b", mood="alert", message="waiting",
+        tool="", event="PermissionRequest", now=base + 0.2,
+    )
+    assert result.aggregate["mood"] == "alert"
+
+    # A background completion is retained as a signal but does not hide WAITING.
+    result = store.record_event(
+        session_id="session-a", mood="happy", message="done",
+        tool="", event="Stop", now=base + 0.3,
+    )
+    assert result.aggregate["mood"] == "alert"
+
+    # The straggler guard is per-session: B is protected, new work in C is not.
+    rejected = store.record_event(
+        session_id="session-b", mood="work", message="working",
+        tool="Bash", event="PostToolUse", now=base + 1.0,
+    )
+    assert not rejected.accepted and rejected.aggregate["mood"] == "alert"
+    accepted = store.record_event(
+        session_id="session-c", mood="work", message="working",
+        tool="Bash", event="PreToolUse", now=base + 1.1,
+    )
+    assert accepted.accepted and accepted.aggregate["mood"] == "alert"
+
+    # Once the alert expires, a still-live long tool becomes visible by itself.
+    assert store.snapshot(now=base + 901.0)["mood"] == "work"
+
+
+def test_session_store_rejects_out_of_order_same_session(b):
+    store = SessionStore(Path(_TEST_HOME) / "same-session-order.sqlite3")
+    base = time.time()
+    published = []
+
+    newer = store.record_event(
+        session_id="same-session", mood="alert", message="waiting",
+        tool="Bash", event="PermissionRequest", now=base + 2.0,
+        status_writer=lambda data: published.append(data["stateVersion"]),
+    )
+    delayed_old = store.record_event(
+        session_id="same-session", mood="work", message="working",
+        tool="Bash", event="PreToolUse", now=base + 1.0,
+        status_writer=lambda data: published.append(data["stateVersion"]),
+    )
+
+    assert newer.accepted and newer.revision == 1
+    assert not delayed_old.accepted and delayed_old.revision == 1
+    assert delayed_old.aggregate["mood"] == "alert"
+    assert published == [1]
+    assert store.snapshot(now=base + 2.0)["mood"] == "alert"
+
+    resolved = store.record_event(
+        session_id="same-session", mood="work", message="working",
+        tool="Bash", event="PostToolUse", now=base + 6.0,
+    )
+    delayed_done = store.record_event(
+        session_id="same-session", mood="happy", message="done",
+        tool="", event="Stop", now=base + 5.0,
+    )
+    assert resolved.accepted and not delayed_done.accepted
+    assert store.snapshot(now=base + 6.0)["mood"] == "work"
+    assert [row["kind"] for row in store.signals_after(0)] == ["alert"]
+
+
+def test_session_store_privacy_and_signals(b):
+    path = Path(_TEST_HOME) / "privacy.sqlite3"
+    store = SessionStore(path)
+    raw_session = "private-session-id-please-do-not-store"
+    base = time.time()
+    first = store.record_event(
+        session_id=raw_session, mood="happy", message="done",
+        tool="", event="Stop", now=base,
+    )
+    assert first.session_key == hashed_session_id(raw_session)
+    assert first.aggregate["session"] == first.session_key[:12]
+    duplicate = store.record_event(
+        session_id=raw_session, mood="happy", message="done",
+        tool="", event="TaskCompleted", now=base + 0.2,
+    )
+    assert duplicate.signal_id is None
+    store.record_event(
+        session_id="other-session", mood="error", message="error",
+        tool="", event="StopFailure", now=base + 0.3,
+    )
+    assert [row["kind"] for row in store.signals_after(0)] == ["happy", "error"]
+
+    raw_bytes = raw_session.encode("utf-8")
+    for db_part in path.parent.glob(path.name + "*"):
+        assert raw_bytes not in db_part.read_bytes(), db_part.name
+
+
+def test_session_store_concurrent_writers(b):
+    path = Path(_TEST_HOME) / "concurrent.sqlite3"
+    base = time.time()
+    ready = threading.Barrier(16)
+
+    def write_one(n):
+        ready.wait(timeout=10)
+        return SessionStore(path).record_event(
+            session_id=f"session-{n}", mood="work", message="working",
+            tool="Bash", event="PreToolUse", now=base + n / 100.0,
+        ).accepted
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        assert all(pool.map(write_one, range(16)))
+    snapshot = SessionStore(path).snapshot(now=base + 1.0)
+    assert snapshot["mood"] == "work" and snapshot["sessionCount"] == 16
+
+
+def test_multisession_signal_delivery(b):
+    old_store = b._session_store
+    old_signal_id = b._last_signal_id
+    old_born = b._born
+    old_play_se = b.bgm.play_se
+    calls = []
+    try:
+        store = SessionStore(Path(_TEST_HOME) / "ui-signals.sqlite3")
+        b._session_store = store
+        b._last_signal_id = 0
+        b._born = time.time() - 5.0
+        b.bgm.play_se = calls.append
+        store.record_event(
+            session_id="background-a", mood="happy", message="done",
+            tool="", event="Stop",
+        )
+        b._consume_session_signals()
+        b._consume_session_signals()
+        assert calls == ["happy"]  # consumed exactly once
+
+        store.record_event(
+            session_id="background-b", mood="alert", message="waiting",
+            tool="", event="PermissionRequest",
+        )
+        b._consume_session_signals()
+        assert calls == ["happy", "alert"]
+    finally:
+        b._session_store = old_store
+        b._last_signal_id = old_signal_id
+        b._born = old_born
+        b.bgm.play_se = old_play_se
+
+
+def test_multisession_done_flash_restores_latest_work(b):
+    old_born = b._born
+    old_play_se = b.bgm.play_se
+    calls = []
+    try:
+        b._born = time.time() - 5.0
+        b.bgm.play_se = calls.append
+        b._apply_status_payload({
+            "mood": "work",
+            "tool": "Bash",
+            "session": "worker-a",
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+        }, signal_backed=True)
+        assert b.mood == "work"
+
+        b._consume_session_signals([{
+            "id": b._last_signal_id + 1,
+            "kind": "happy",
+            "session_key": "finished-b",
+            "event": "Stop",
+        }])
+        assert b.mood == "happy"
+        assert b._session_done_until > time.time()
+        assert calls == ["happy"]
+
+        # A current aggregate keeps changing under the temporary DONE.  It
+        # must not interrupt the celebration, but it must be the state restored.
+        b._apply_status_payload({
+            "mood": "work",
+            "tool": "Agent",
+            "session": "worker-c",
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+        }, signal_backed=True)
+        assert b.mood == "happy"
+        assert b._aggregate_mood == "work"
+
+        b._session_done_until = time.time() - 0.01
+        assert b._expire_session_done_flash()
+        assert b.mood == "work"
+        assert b._status_session == "worker-c"
+        assert not b._expire_session_done_flash()
+        assert calls == ["happy"]  # restoration must not replay the sound
+    finally:
+        b._born = old_born
+        b.bgm.play_se = old_play_se
+
+
+def test_multisession_done_flash_urgent_preemption(b):
+    b._aggregate_mood = "work"
+    b._set_mood("work", signal_backed=True)
+    assert b._start_session_done_flash()
+    assert b.mood == "happy"
+
+    b._apply_status_payload({
+        "mood": "alert",
+        "tool": "",
+        "session": "waiting-session",
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }, signal_backed=True)
+    assert b.mood == "alert"
+    assert b._session_done_until == 0.0
+    assert not b._start_session_done_flash()
+
+    b._apply_status_payload({
+        "mood": "work",
+        "tool": "Edit",
+        "session": "worker-session",
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }, signal_backed=True)
+    assert b._start_session_done_flash()
+    b._apply_status_payload({
+        "mood": "error",
+        "tool": "",
+        "session": "failed-session",
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }, signal_backed=True)
+    assert b.mood == "error"
+    assert b._session_done_until == 0.0
+
+
+def test_multisession_done_flash_stays_done_when_all_complete(b):
+    b._aggregate_mood = "work"
+    b._set_mood("work", signal_backed=True)
+    assert b._start_session_done_flash()
+
+    # If the provider-wide aggregate also becomes DONE during the flash, its
+    # expiry must not manufacture a brief WORKING/IDLE flicker.
+    b._apply_status_payload({
+        "mood": "happy",
+        "tool": "",
+        "session": "last-finished-session",
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }, signal_backed=True)
+    assert b.mood == "happy"
+    assert b._aggregate_mood == "happy"
+    b._session_done_until = time.time() - 0.01
+    assert b._expire_session_done_flash()
+    assert b.mood == "happy"
+
+
+def test_multisession_done_flash_coalesces_and_restarts(b):
+    old_born = b._born
+    old_play_se = b.bgm.play_se
+    calls = []
+    try:
+        b._born = time.time() - 5.0
+        b.bgm.play_se = calls.append
+        b._aggregate_mood = "work"
+        b._set_mood("work", signal_backed=True)
+        first_id = b._last_signal_id + 1
+
+        # Completions delivered in one 350ms poll are one celebration/sound.
+        b._consume_session_signals([
+            {"id": first_id, "kind": "happy", "event": "Stop"},
+            {"id": first_id + 1, "kind": "happy", "event": "Stop"},
+        ])
+        assert calls == ["happy"]
+        assert b.mood == "happy"
+
+        # A later completion is a new moment: restart both animation and timer.
+        b.frame = 7
+        shortened_until = time.time() + 0.01
+        b._session_done_until = shortened_until
+        b._consume_session_signals([
+            {"id": first_id + 2, "kind": "happy", "event": "Stop"},
+        ])
+        assert calls == ["happy", "happy"]
+        assert b.frame == 0
+        assert b._session_done_until > shortened_until + 2.5
+    finally:
+        b._born = old_born
+        b.bgm.play_se = old_play_se
+
+
+def test_multisession_alert_timing(b):
+    event_at = time.time() - 30.0
+    payload = {
+        "mood": "alert",
+        "tool": "",
+        "session": "second-session",
+        "updatedAt": datetime.fromtimestamp(event_at, timezone.utc).isoformat(),
+    }
+    b.mood = "alert"
+    b._status_session = "first-session"
+    b.mood_since = time.time()
+    b._apply_status_payload(payload, signal_backed=True)
+    assert abs(b.mood_since - event_at) < 0.1
+
+    # Re-reading the same aggregate must not keep restarting the roam timer.
+    first = b.mood_since
+    b._apply_status_payload(payload, signal_backed=True)
+    assert b.mood_since == first
 
 
 def test_notification_filter(b):
@@ -516,6 +1032,28 @@ def test_permission_request_mood(b):
         "PermissionRequest", {"notification_type": "auth_success"})
 
 
+def test_background_stop_detection(b):
+    import hook_entry as he
+    running = [{
+        "id": "task-1",
+        "type": "shell",
+        "status": "running",
+        "description": "must not be inspected",
+        "command": "must not be inspected either",
+    }]
+    assert he.stop_has_pending_background(
+        "Stop", {"background_tasks": running})
+    assert he.stop_has_pending_background(
+        "stop", {"background_tasks": running})
+    assert not he.stop_has_pending_background(
+        "Stop", {"background_tasks": []})
+    assert not he.stop_has_pending_background("Stop", {})
+    assert not he.stop_has_pending_background(
+        "Stop", {"background_tasks": {"task-1": "running"}})
+    assert not he.stop_has_pending_background(
+        "TaskCompleted", {"background_tasks": running})
+
+
 def test_skip_line_shape_only(b):
     import hook_entry as he
     os.environ.pop("MADOMOCHI_HOOK_DEBUG", None)
@@ -532,6 +1070,59 @@ def test_skip_line_shape_only(b):
         assert "weird field!" not in line and "<odd>" in line  # ...only
     finally:
         os.environ.pop("MADOMOCHI_HOOK_DEBUG", None)
+
+
+def test_hook_persisted_fields_are_bounded(b):
+    import hook_entry as he
+    huge = "private-" + ("x" * 10_000)
+    bounded = he._bounded_field(huge)
+    assert len(bounded) == he.PERSISTED_FIELD_LIMIT
+    assert bounded.endswith("<truncated>")
+    assert he._bounded_field("Bash") == "Bash"
+
+    try:
+        he.LOG_PATH.unlink()
+    except OSError:
+        pass
+    he.log(huge)
+    written = he.LOG_PATH.read_text(encoding="utf-8")
+    assert huge not in written
+    assert "<truncated>" in written
+    assert len(written) < he.LOG_LINE_LIMIT + 100
+
+
+def test_hook_input_is_bounded_and_drained(b):
+    import hook_entry as he
+    small = io.BytesIO(b'{"hook_event_name":"Stop"}')
+    raw, oversized = he._read_hook_input(small, limit=64)
+    assert not oversized
+    assert json.loads(raw)["hook_event_name"] == "Stop"
+
+    payload = io.BytesIO(b"x" * 100)
+    raw, oversized = he._read_hook_input(payload, limit=32)
+    assert oversized and raw == ""
+    assert payload.tell() == 100  # excess was drained without being retained
+
+
+def test_hook_input_decode_error_log_is_shape_only(b):
+    import hook_entry as he
+
+    class BadStdin:
+        buffer = io.BytesIO(b"PRIVATE-PROMPT-\xff-SECRET")
+
+    lines = []
+    real_stdin, real_argv, real_log = he.sys.stdin, he.sys.argv, he.log
+    he.sys.stdin = BadStdin()
+    he.sys.argv = ["hook_entry.py"]
+    he.log = lines.append
+    try:
+        assert he.main() == 0
+    finally:
+        he.sys.stdin, he.sys.argv, he.log = real_stdin, real_argv, real_log
+
+    joined = "\n".join(lines)
+    assert "stdin_err type=UnicodeDecodeError" in joined
+    assert "PRIVATE" not in joined and "SECRET" not in joined
 
 
 def test_event_argv_fallback(b):
@@ -568,6 +1159,15 @@ def test_template_wiring(b):
                     assert "async" not in h and h["timeout"] <= 5
                 else:
                     assert h.get("async") is True
+    root = Path(__file__).resolve().parent.parent
+    for doc in (
+        root / "README.md",
+        root / "README.ja.md",
+        root / "experimental" / "macos" / "README.md",
+    ):
+        text = doc.read_text(encoding="utf-8")
+        assert "2.1.145" in text
+        assert "2.1.139" not in text
 
 
 def test_singleton_mutex(b):
@@ -591,7 +1191,7 @@ def test_quit_snooze(b):
 def test_mac_audio_backend(b):
     mac_dir = Path(__file__).resolve().parent.parent / "experimental" / "macos"
     if not (mac_dir / "mac_audio.py").is_file():
-        return  # scaffold not shipped in this tree
+        return  # optional macOS support is not present in this distribution
     sys.path.insert(0, str(mac_dir))
     import mac_audio as ma
 
@@ -658,6 +1258,10 @@ def test_i18n_tables(b):
 
 
 def test_language_switch(b):
+    # On an English system the visible language already matches the menu
+    # choice, but selecting it must still pin the preference in config.json.
+    b.lang = "en"
+    b.lang_pref = None
     b._set_lang("en")
     assert b.lang == "en" and b.lang_pref == "en"
     assert b._badge_label("alert") == "WAITING"
@@ -693,8 +1297,39 @@ def test_bgm_mood_follow_logic(b):
     assert p.track_id == "victory_march"
 
 
+def test_error_log_rate_limit(b):
+    """One persistent render failure must not write on every frame."""
+    log = Path(_TEST_HOME) / "buddy_err.log"
+    old = log.with_suffix(".log.old")
+    log.unlink(missing_ok=True)
+    old.unlink(missing_ok=True)
+    b._error_log_state = {}
+
+    def emit(message):
+        try:
+            raise RuntimeError(message)
+        except RuntimeError:
+            b._log_error()
+
+    emit("first")
+    first = log.read_text(encoding="utf-8")
+    for i in range(20):
+        emit(f"changing message {i}")
+    assert log.read_text(encoding="utf-8") == first
+    assert sum(entry[1] for entry in b._error_log_state.values()) == 20
+
+    # Advance the per-signature clock without making this test wait a minute.
+    for key, (last, count) in list(b._error_log_state.items()):
+        b._error_log_state[key] = (last - 3600.0, count)
+    emit("after cooldown")
+    second = log.read_text(encoding="utf-8")
+    assert second.count("Traceback (most recent call last)") == 2
+    assert "[suppressed 20 repeat(s)]" in second
+
+
 TESTS = [
     test_all_skins_render,
+    test_agent_2nd_eye_gap,
     test_night_doze,
     test_morning_gym_once,
     test_premium_rotation,
@@ -712,6 +1347,7 @@ TESTS = [
     test_bgm_controls_stay_silent,
     test_bgm_pause_resume,
     test_bgm_mood_follow_logic,
+    test_error_log_rate_limit,
     test_mac_audio_backend,
     test_se_render_and_gate,
     test_park_mode,
@@ -720,10 +1356,27 @@ TESTS = [
     test_show_roam_lap,
     test_big_slime_wider,
     test_hook_scrub,
+    test_project_hook_local_migration,
+    test_settings_save_failure_is_atomic,
+    test_settings_concurrent_change_is_not_overwritten,
+    test_windows_launcher_and_purge_guards,
     test_status_write_atomic,
+    test_manual_status_reports_replace_failure,
+    test_session_store_priority_and_isolation,
+    test_session_store_rejects_out_of_order_same_session,
+    test_session_store_privacy_and_signals,
+    test_session_store_concurrent_writers,
+    test_multisession_signal_delivery,
+    test_multisession_done_flash_restores_latest_work,
+    test_multisession_done_flash_urgent_preemption,
+    test_multisession_done_flash_stays_done_when_all_complete,
+    test_multisession_done_flash_coalesces_and_restarts,
+    test_multisession_alert_timing,
     test_notification_filter,
     test_permission_request_mood,
+    test_background_stop_detection,
     test_skip_line_shape_only,
+    test_hook_persisted_fields_are_bounded,
     test_event_argv_fallback,
     test_template_wiring,
     test_singleton_mutex,

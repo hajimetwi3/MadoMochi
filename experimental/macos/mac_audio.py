@@ -1,5 +1,5 @@
 """
-macOS audio layer for MadoMochi — UNTESTED, written on Windows (afplay-based).
+Experimental macOS audio layer for MadoMochi (afplay-based).
 
 The synth is reused from scripts/retro_bgm.py (the WAV renderers are
 pure stdlib and platform-free); only playback differs:
@@ -11,7 +11,7 @@ pure stdlib and platform-free); only playback differs:
 - No `-v` flag on purpose: volume is already baked into the rendered
   WAV by ensure_wav/ensure_se_wav.
 
-Process lifecycle (review-hardened): a Lock guards all process handles,
+Process lifecycle: a Lock guards all process handles,
 stop() does terminate -> bounded wait -> kill -> wait, and finished SE
 processes are pruned on every new effect.
 

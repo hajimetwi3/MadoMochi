@@ -6,9 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+from session_state import chmod_private, ensure_private_dir
 
 BUDDY_DIR = Path(os.environ.get("CLAUDE_BUDDY_DIR", Path.home() / ".claude" / "madomochi"))
 DEFAULT_STATUS = Path(os.environ.get("CLAUDE_BUDDY_STATUS", BUDDY_DIR / "status.json"))
@@ -25,7 +28,10 @@ def main() -> int:
     args = parser.parse_args()
 
     path = Path(args.path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent == BUDDY_DIR:
+        ensure_private_dir(BUDDY_DIR)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "mood": args.mood,
         "message": args.message,
@@ -35,12 +41,23 @@ def main() -> int:
     }
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    chmod_private(tmp)
+    last_error = None
     for _ in range(4):
         try:
             tmp.replace(path)
+            chmod_private(path)
             break
-        except PermissionError:
+        except OSError as exc:
+            last_error = exc
             time.sleep(0.03)
+    else:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        print(f"could not update {path}: {last_error}", file=sys.stderr)
+        return 1
     print(f"{args.mood} -> {path}")
     return 0
 

@@ -37,9 +37,12 @@ $S = @{
         ask_path   = "Full path of the project folder"
         not_found  = "Folder not found: {0}"
         cancelled  = "Cancelled"
+        scope_conflict = "Choose either -Global or -Project, not both."
         ask_purge  = "Also delete the buddy's data (~/.claude/madomochi: settings, cache, logs)? (y/N)"
         purged     = "Buddy data deleted."
         kept       = "Buddy data kept (position, skin and audio settings survive a reinstall)."
+        stop_failed = "MadoMochi did not confirm shutdown. Hook removal completed, but uninstall needs attention."
+        purge_blocked = "Data deletion was skipped. Close MadoMochi and run uninstall again."
         done       = "Uninstall complete. Removal usually applies right away (restart sessions if hooks linger)"
     }
     ja = @{
@@ -52,13 +55,21 @@ $S = @{
         ask_path   = "プロジェクトフォルダのフルパス"
         not_found  = "フォルダが見つかりません: {0}"
         cancelled  = "中止しました"
+        scope_conflict = "-Global と -Project は同時に指定できません。どちらか一方を選んでください。"
         ask_purge  = "バディのデータ (~/.claude/madomochi: 設定・キャッシュ・ログ) も削除しますか？ (y/N)"
         purged     = "バディのデータを削除しました。"
         kept       = "バディのデータは残しました（位置・スキン・音の設定は再インストール後も生きます）。"
+        stop_failed = "MadoMochi の終了を確認できませんでした。フックは除去しましたが、アンインストールには確認が必要です。"
+        purge_blocked = "データ削除を中止しました。MadoMochi を終了してからアンインストールを再実行してください。"
         done       = "アンインストール完了。除去は通常すぐ反映されます（残るようならセッションを張り直してください）"
     }
 }
 $L = $S[$Lang]
+
+if ($Global -and $Project) {
+    Write-Host $L.scope_conflict
+    exit 1
+}
 
 $py = Get-Command python -ErrorAction SilentlyContinue
 if (-not $py) {
@@ -86,6 +97,7 @@ if ($interactive) {
 
 # dismiss the buddy first (also snoozes prompt-revival for open sessions)
 powershell -NoProfile -ExecutionPolicy Bypass -File "$root\scripts\stop_buddy.ps1" | Out-Null
+$stopOk = ($LASTEXITCODE -eq 0)
 
 if ($Global) {
     python "$root\scripts\install_hooks.py" --uninstall
@@ -101,11 +113,19 @@ if ($interactive -and (Test-Path $dataDir)) {
     $ans = Read-Host $L.ask_purge
     if ($ans -eq "y") { $purge = $true }
 }
-if ($purge -and (Test-Path $dataDir)) {
-    Remove-Item -Recurse -Force $dataDir
+if (-not $stopOk) {
+    Write-Host $L.stop_failed
+    if ($purge) { Write-Host $L.purge_blocked }
+    Write-Host $L.kept
+    exit 1
+}
+if ($purge) {
+    if (Test-Path -LiteralPath $dataDir) {
+        Remove-Item -LiteralPath $dataDir -Recurse -Force
+    }
     # keep the quit marker so hooks still loaded in open sessions stay polite
-    New-Item -ItemType Directory -Force $dataDir | Out-Null
-    Set-Content -Path (Join-Path $dataDir "quit.ts") -Value "uninstalled"
+    New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+    Set-Content -LiteralPath (Join-Path $dataDir "quit.ts") -Value "uninstalled"
     Write-Host $L.purged
 } else {
     Write-Host $L.kept

@@ -38,6 +38,7 @@ $S = @{
         ask_path   = "Full path of the project folder"
         not_found  = "Folder not found: {0}"
         cancelled  = "Cancelled"
+        scope_conflict = "Choose either -Global or -Project, not both."
         ask_launch = "Launch the buddy now? (Y/n)"
         done       = "Setup complete. Hooks usually take effect right away (open a new session if not)"
     }
@@ -51,11 +52,17 @@ $S = @{
         ask_path   = "プロジェクトフォルダのフルパス"
         not_found  = "フォルダが見つかりません: {0}"
         cancelled  = "中止しました"
+        scope_conflict = "-Global と -Project は同時に指定できません。どちらか一方を選んでください。"
         ask_launch = "今すぐバディを起動しますか？ (Y/n)"
         done       = "セットアップ完了。フックは通常すぐ有効になります（反映されない場合は新しいセッションで）"
     }
 }
 $L = $S[$Lang]
+
+if ($Global -and $Project) {
+    Write-Host $L.scope_conflict
+    exit 1
+}
 
 $py = Get-Command python -ErrorAction SilentlyContinue
 if (-not $py) {
@@ -91,10 +98,12 @@ if ($LASTEXITCODE -ne 0) { exit 1 }
 
 if ($Start) {
     powershell -NoProfile -ExecutionPolicy Bypass -File "$root\scripts\start_buddy.ps1"
+    if ($LASTEXITCODE -ne 0) { exit 1 }
 } elseif ($interactive) {
     $ans = Read-Host $L.ask_launch
     if ($ans -ne "n") {
         powershell -NoProfile -ExecutionPolicy Bypass -File "$root\scripts\start_buddy.ps1"
+        if ($LASTEXITCODE -ne 0) { exit 1 }
     }
 }
 

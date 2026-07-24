@@ -5,7 +5,7 @@ English | [日本語](README.ja.md)
 A tiny pixel buddy **for Claude Code** that lives at the edge of your
 window — *mado* (窓) is Japanese for "window", and *mochi* is exactly the
 squishy little thing you are picturing. It docks to the Claude Code
-window and reacts to what your session is actually doing — via Claude
+window and reacts to what your Claude sessions are actually doing — via Claude
 Code hooks.
 *(Unofficial community project — not affiliated with Anthropic.)*
 
@@ -18,12 +18,12 @@ Code hooks.
 ## Requirements
 
 - **Windows 11** (window tracking & transparency use Win32 APIs; Windows 10
-  still works, but its mainstream support ended in October 2025 — use it
+  still works, but support ended on October 14, 2025 — use it
   only on an ESU-covered or otherwise updated system)
 - **Python 3.10+** — the standard installer is enough (tkinter and pythonw
   included; **no pip packages needed**, standard library only). Enable
   "Add python.exe to PATH" during install — `install.ps1` looks for `python`
-- **Claude Code** (desktop app, or the CLI in a terminal window) — the thing
+- **Claude Code 2.1.145+** (desktop app, or the CLI in a terminal window) — the thing
   the buddy docks to and reacts to; it hides while no Claude window exists
 - macOS: not supported yet, but an **experimental port** lives in
   [experimental/macos/](experimental/macos/) — its automated apply/undo
@@ -54,6 +54,31 @@ effect.
 
 Stuck-state safety net: if no hook event arrives for 5 minutes (30 minutes
 after long-running tools like Bash/Agent), WORKING falls back to idle.
+
+### Multiple Claude sessions
+
+Hook events are tracked separately by Claude Code `session_id`, then combined
+into **one Claude companion**. The visible state follows this priority:
+`WAITING` → `ERROR` → `WORKING` → `LISTEN`/`THINK` → `DONE` → `IDLE`/`SLEEP`.
+This keeps a helper session's start/end from putting an active session to
+sleep, and keeps an unresolved permission prompt visible while other sessions
+continue. When any session completes, the companion briefly shows DONE with
+its celebration (and a sound cue when enabled), then returns to the newest
+aggregate state—usually WORKING if another session is still active. WAITING
+and ERROR interrupt this brief DONE immediately. Simultaneous cues are
+coalesced so they do not pile up.
+
+If a modern Claude Code `Stop` payload says background tasks are still in
+flight, MadoMochi keeps the preceding WORKING state and defers DONE until the
+final `Stop` with no pending task. It checks only whether that task array is
+empty; descriptions and command strings are neither logged nor stored. If the
+field is absent, MadoMochi retains the normal `Stop` behavior.
+
+This version has one provider boundary (`claude`) and one companion for it.
+Subagent events are intentionally folded into their parent session: this first
+version separates Claude Code sessions, not every subagent.
+If Claude Code invokes a hook without `session_id`, MadoMochi places that event
+in a shared anonymous fallback bucket because it cannot be attributed safely.
 
 ## Idle extras
 
@@ -105,12 +130,15 @@ the music.
 
 > ⚠️ **Pick a stable folder first.** The installer copies no files — it
 > writes the **absolute path** of this folder into your hook settings.
-> Moving or renaming the folder afterwards silently breaks the wiring
-> (run `install.ps1` again from the new location to re-wire).
+> Moving or renaming the folder afterwards breaks the wiring and can
+> produce hook errors. Re-wire from the new location before continuing
+> to use Claude Code there (`install.ps1` does this).
 >
-> After installing, three places are in use:
+> After installing, three main places are in use (plus the separate safety
+> backups described below):
 > - **this folder** — the app itself (scripts/ and skins, run in place)
-> - **hook wiring** — `~/.claude/settings.json` (or a project's `.claude/settings.json`)
+> - **hook wiring** — `~/.claude/settings.json` (global) or a project's
+>   `.claude/settings.local.json` (project-scoped, machine-local)
 > - **state & config** — `~/.claude/madomochi/` (status, config, caches, logs)
 
 ```powershell
@@ -127,7 +155,16 @@ one with `-Lang en` / `-Lang ja`.
 - The canonical hook wiring lives in
   [install.settings/settings.template.json](install.settings/settings.template.json)
   (`{{PYTHON}}` / `{{HOOK_ENTRY}}` placeholders resolved per machine)
-- The generated `.claude/settings.json` is machine-specific and untracked
+- Global wiring is stored in `~/.claude/settings.json`; project wiring is
+  stored in the machine-local `.claude/settings.local.json`, which should
+  remain outside version control.
+  Installing to a project also removes older MadoMochi entries from that
+  project's shared `.claude/settings.json` while preserving unrelated settings
+- Before changing a settings file, the installer keeps a local, bounded
+  backup under `~/.claude/madomochi_backups/` (up to five versions per target).
+  These safety backups are separate from runtime data and may be deleted
+  manually when you no longer need them. Each backup contains the complete
+  pre-change settings file, so keep it private and do not publish it
 - Hook wiring changes normally apply to **running sessions automatically**
   (Claude Code watches its settings files); open a new session if they
   don't seem to land (older versions)
@@ -144,8 +181,10 @@ powershell -ExecutionPolicy Bypass -File uninstall.ps1
 
 Same interactive choices as the installer (global / this project / another
 folder). It dismisses the buddy and removes **only the buddy's wiring**
-from settings.json — other settings and other hooks are untouched, with an
-automatic backup. Scripted: `uninstall.ps1 -Global` / `-Project <dir>`;
+from the relevant settings files — including historical project wiring in
+`.claude/settings.json` and current wiring in `.claude/settings.local.json`.
+Other settings and hooks are left intact, with an automatic backup. Scripted:
+`uninstall.ps1 -Global` / `-Project <dir>`;
 add `-PurgeData` to clear the saved settings, cache, and logs in
 `~/.claude/madomochi`.
 Removal normally applies to running sessions right away too; restart a
@@ -164,8 +203,7 @@ in the bottom-right corner of the desktop instead (`park_when_hidden`).
 Size etc. live in the settings dialog (right-click → Settings…), or via
 CLI: `python scripts\buddy.py --scale 3` (default 2.4; fractions are fine
 — rational-number scaling). Internally the sprite is a 64×64 fine grid:
-chunky 2-px body blocks, with 1-px details (whiskers, > < eyes)
-anti-aliased on top.
+chunky 2-px body blocks with crisp 1-px details (whiskers, > < eyes).
 
 ## Controls
 
@@ -179,8 +217,9 @@ anti-aliased on top.
 
 **Language**: the UI ships in English and Japanese. It defaults to your
 Windows display language; right-click → **English / 日本語** pins a choice
-(`lang` in config.json, `null` = auto). All UI strings live in
-[scripts/i18n.py](scripts/i18n.py) — adding a language is one more dict.
+(`lang` in config.json, `null` = auto). Common interface text lives in
+[scripts/i18n.py](scripts/i18n.py); skin and track display names are defined
+alongside their respective modules.
 
 Settings dialog sliders: scale, idle-walk delay, premium interval, roam
 threshold — plus a factory-reset button. The dialog also hosts a
@@ -188,9 +227,9 @@ threshold — plus a factory-reset button. The dialog also hosts a
 whole repertoire with music and sound effects on a fixed script — in
 performance mode every mood switches the track, and a too-quiet volume is
 temporarily floored at 35% — then restores your audio settings afterwards.
-Made for recording README GIFs: roaming is left out by default so the
-buddy never leaves the frame, with an "Include roaming" checkbox for
-stage/event runs. Values persist in
+Roaming is left out by default so the buddy stays in the showcase area;
+enable "Include roaming" when you want to see the full-screen walk. Values
+persist in
 `~/.claude/madomochi/config.json`
 (`walk_after_sec` / `premium_min_sec` / `premium_max_sec` / `roam_after_sec` /
 `scale` / `skin` / `bgm_enabled` / `bgm_volume` / `bgm_track` /
@@ -199,10 +238,11 @@ stage/event runs. Values persist in
 
 ## Skins
 
-Thirteen original characters ship with the buddy: **Neko** (the default
+Fifteen original characters ship with the buddy: **Neko** (the default
 teal cat), Neko-sakura, Penguin, Usagi (bunny), Obake (ghost), Slime,
 Big Slime (1.5x wider), Kaeru (frog), Shiba, Fukurou (owl), Tako
-(octopus), Kinoko (mushroom) and Onigiri. House style: chunky flat
+(octopus), Kinoko (mushroom), Onigiri and Agent One (a midnight terminal
+spirit), plus Agent 2nd (a pearl-and-mint monitor sprite). House style: chunky flat
 bodies, solid dark eyes, one fine-grid detail per character (whiskers,
 suckers, nori...).
 
@@ -224,7 +264,10 @@ Four patterns to copy from:
   loads Slime and stretches just the body 1.5x wider — eyes and mouth keep
   their size and only spread apart, props stay true to size
 
-A broken skin file is silently skipped; it can never take the buddy down.
+A skin that fails to import or lacks the required interface is skipped. Errors
+raised while rendering a custom skin are contained by the render loop and
+written to `buddy_err.log`, with repeats from the same failure site
+rate-limited. Switch back to a bundled skin if a custom skin misbehaves.
 
 > ⚠️ **Skins are Python code** executed with your privileges when the buddy
 > starts. Only install skins you trust (or have read).
@@ -233,7 +276,8 @@ A broken skin file is silently skipped; it can never take the buddy down.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\stop_buddy.ps1
-python tests\test_units.py          # regression suite (all features)
+python -B tests\test_session_state.py # GUI-free multi-session tests
+python -B tests\test_units.py       # main regression suite
 python tests\soccer_strip.py out.png [mood] [skin]   # render sprite phases
 powershell -ExecutionPolicy Bypass -File scripts\start_buddy.ps1
 ```
@@ -252,7 +296,7 @@ MadoMochi/                  # repo root
   README.md / README.ja.md  # this document (English / Japanese)
   LICENSE                   # MIT license text
   .gitignore                # ignores caches, PNG renders, generated files
-  .claude/settings.json     # hook wiring generated on install (untracked)
+  .claude/settings.local.json # project hook wiring (keep outside version control)
   install.ps1               # interactive installer
   uninstall.ps1             # interactive uninstaller (-PurgeData wipes data too)
   install.settings/
@@ -261,23 +305,40 @@ MadoMochi/                  # repo root
     buddy.py                # the floating window itself (tkinter, transparent, topmost)
     retro_bgm.py            # 12 built-in chiptune tracks + LED patterns (stdlib synth)
     i18n.py                 # UI strings (EN/JA) and display-language detection
-    skins/                  # 13 skins + the shared base _base.py (drop a .py to add)
+    skins/                  # 15 skins + the shared base _base.py (drop a .py to add)
     window_pos.py           # Claude-window detection & anchoring (pure ctypes)
-    hook_entry.py           # hook entrypoint (stdin JSON -> status.json, always exit 0)
+    hook_entry.py           # hook entrypoint (stdin JSON -> per-session state; handled calls exit 0)
+    session_state.py        # SQLite session store, aggregation, decay, sound signals
     set_status.py           # set the mood manually
-    install_hooks.py        # wires the template into settings.json
+    install_hooks.py        # wires the template into Claude Code settings
     start_buddy.ps1 / stop_buddy.ps1
   tests/
-    test_units.py           # regression suite (run with the buddy stopped)
+    test_units.py           # regression suite (run with the buddy stopped, using python -B)
+    test_session_state.py   # GUI-free, cross-platform multi-session tests
     test_macos_apply.py     # isolated macOS apply/undo safety tests
     soccer_strip.py         # render sprite phases to PNG
     capture.ps1             # DPI-aware screen capture (-CropX/-CropY/-CropW/-CropH/-Zoom)
 ```
 
-Runtime files live in `~/.claude/madomochi/`: `status.json` (current mood),
-`config.json` (position & settings), `hook.log` (every hook event),
-`buddy_err.log` (render-loop errors, rotated at 1MB), `bgm_cache/`
-(synthesized WAV loops).
+Runtime files live in `~/.claude/madomochi/`: `status.json` (current aggregate
+mood), `sessions.sqlite3` (per-session state; SQLite may also create `-wal` and
+`-shm` sidecars while active), `config.json` (position & settings), `hook.log`
+(every hook event), `buddy_err.log` (render-loop errors, repeats from the same
+failure site rate-limited and rotated at 1MB), and
+`bgm_cache/` (synthesized WAV loops). The session database stores a SHA-256-
+derived session key, state/event labels, and tool names; it does **not** store
+raw session IDs, prompts, tool input/output, or transcript paths.
+Hook input is processed only up to 4 MiB. An oversized payload is ignored
+without being parsed or persisted; only a size-limit diagnostic is logged.
+Diagnostic tracebacks can contain local file paths; review logs before sharing
+an excerpt and do not publish complete log files.
+
+Settings-file safety backups are stored separately in
+`~/.claude/madomochi_backups/`, with at most five versions retained per target.
+`-PurgeData` removes runtime data but intentionally leaves these recovery
+copies. They contain complete pre-change settings files and may include other
+local configuration, so do not share them; delete the backup directory
+manually after you no longer need it.
 
 ## Troubleshooting
 
@@ -314,7 +375,10 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 
 Choose the same hook scope you used before (repeat this for each scope if
 you wired more than one). A separate uninstall of the old version is not
-needed: the installer replaces the existing MadoMochi hook wiring.
+needed: the installer replaces existing MadoMochi hook wiring. For a
+project-scoped installation, it also removes older MadoMochi entries from
+the shared `.claude/settings.json` and installs the new wiring in the
+machine-local `.claude/settings.local.json`.
 
 When updating from v0.9.1 or earlier, the old runtime-data folder
 `~/.claude/buddy` may remain. MadoMochi v0.9.2 and later do not use it.
@@ -330,8 +394,10 @@ MadoMochi application folder.
 - **Unofficial**: this is a community project — not affiliated with,
   endorsed by, or sponsored by Anthropic. "Claude" and "Claude Code" are
   trademarks of Anthropic, PBC, used here only to describe compatibility.
-- Everything is local: the status files never leave your machine
-- Hooks are fail-open by design — a buddy failure can never block Claude Code
+- Everything is local: runtime state never leaves your machine
+- When the MadoMochi entrypoint starts normally, it returns no permission
+  decision. Re-wire or uninstall it before moving or deleting its installed
+  folder so a stale missing-script hook cannot affect a permission prompt
 - **Mascot IP note**: this repository ships only original characters. The
   engine is mascot-agnostic — if you skin it as someone else's mascot for
   fun, keep that skin local and don't redistribute it.
@@ -347,10 +413,9 @@ Use at your own risk. Backing up your files is your responsibility.
 
 ## Announcements  
 
-- Announced on X as well(in Japanese).  
+- Announced on X as well (in Japanese).  
   [https://x.com/hajimetwi3/status/2078773256275083572](https://x.com/hajimetwi3/status/2078773256275083572)
   
 ## Author
 
 [Hajime Tsui](https://hajimetwi3.github.io/hajimetwi3/)  
-

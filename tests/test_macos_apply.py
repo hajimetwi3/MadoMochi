@@ -128,7 +128,9 @@ class Sandbox:
         """Apply, then import this sandbox's buddy without a Tk window."""
         self.apply_ok()
         module_name = f"patched_buddy_under_test_{Sandbox.counter}"
-        local_names = ("window_pos", "i18n", "retro_bgm", "mac_audio")
+        local_names = (
+            "window_pos", "i18n", "retro_bgm", "mac_audio", "session_state"
+        )
         saved_modules = {name: sys.modules.get(name) for name in local_names}
         saved_path = list(sys.path)
         try:
@@ -279,6 +281,75 @@ def test_apply_refuses_invalid_manifest():
     assert sha(sb.scripts / "buddy.py") == patched, "nothing may be written"
 
 
+def test_clean_apply_refuses_stale_manifestless_backup():
+    sb = Sandbox()
+    sb.backup.mkdir()
+    for name in SOURCES:
+        shutil.copy2(sb.scripts / name, sb.backup / name)
+    stale = sb.backup / "buddy.py"
+    stale.write_text("# from an older release\n" + stale.read_text(encoding="utf-8"),
+                     encoding="utf-8")
+    before = {name: sha(sb.scripts / name) for name in SOURCES}
+
+    code, out = sb.run("--force")
+    assert code == 1, out
+    assert "does not belong to" in out and "fresh MadoMochi" in out
+    assert "Nothing was written" in out
+    assert all(sha(sb.scripts / name) == before[name] for name in SOURCES)
+    assert not sb.manifest.exists()
+    assert not any((sb.scripts / name).exists() for name in COPIES)
+    assert stale.is_file(), "the uncertain backup must be left recoverable"
+
+
+def test_clean_apply_resumes_matching_manifestless_backup():
+    sb = Sandbox()
+    sb.backup.mkdir()
+    for name in SOURCES:
+        shutil.copy2(sb.scripts / name, sb.backup / name)
+
+    code, out = sb.run("--force")
+    assert code == 0, out
+    assert "manifest: written" in out
+    code, out = sb.run("--undo", "--force")
+    assert code == 0, out
+    assert sb.stock()
+
+
+def test_reapply_refuses_manifestless_applied_tree_with_stale_backup():
+    """Never promote an unverified old backup into a successful undo point."""
+    sb = Sandbox()
+    sb.apply_ok()
+    sb.manifest.unlink()
+    stale = sb.backup / "buddy.py"
+    stale.write_text(
+        "# from another release\n" + stale.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    before = {p: sha(p) for p in sb.scripts.iterdir() if p.is_file()}
+
+    code, out = sb.run("--force")
+    assert code == 1, out
+    assert "already-patched macOS tree has no valid" in out
+    assert "Nothing was written" in out and "freshly downloaded" in out
+    assert {p: sha(p) for p in sb.scripts.iterdir() if p.is_file()} == before
+    assert not sb.manifest.exists()
+    assert stale.read_text(encoding="utf-8").startswith("# from another release")
+
+
+def test_reapply_refuses_altered_manifest_backup():
+    sb = Sandbox()
+    sb.apply_ok()
+    patched = {name: sha(sb.scripts / name) for name in SOURCES}
+    backup = sb.backup / "buddy.py"
+    backup.write_text(backup.read_text(encoding="utf-8") + "\n# altered\n",
+                      encoding="utf-8")
+
+    code, out = sb.run("--force")
+    assert code == 1, out
+    assert "backup is incomplete or altered" in out and "buddy.py" in out
+    assert all(sha(sb.scripts / name) == patched[name] for name in SOURCES)
+
+
 def _reapply_preserves(source_name):
     sb = Sandbox()
     sb.apply_ok()
@@ -316,7 +387,7 @@ def test_legacy_apply_refuses_missing_backup():
     patched = sha(sb.scripts / "buddy.py")
     code, out = sb.run("--force")
     assert code == 1, out
-    assert "older scaffold" in out and "window_pos.py" in out
+    assert "already-patched macOS tree has no valid" in out
     assert sha(sb.scripts / "buddy.py") == patched, "nothing may be written"
 
 
@@ -679,6 +750,12 @@ def test_mac_gui_recovery_contract():
         def lift(self):
             self.calls.append(("lift", ()))
 
+        def overrideredirect(self, value):
+            self.calls.append(("overrideredirect", (value,)))
+
+        def deiconify(self):
+            self.calls.append(("deiconify", ()))
+
         def after_idle(self, callback):
             self.pending.append(("idle", callback))
 
@@ -699,6 +776,28 @@ def test_mac_gui_recovery_contract():
         callback()
     assert buddy.root.calls == expected * 3, \
         "every recovery pass must force a real false-to-true transition"
+
+    # The first visible Aqua map must use the same remap path used after a
+    # restored window so native-titlebar removal stays consistent.
+    buddy.root.calls.clear()
+    buddy.root.pending.clear()
+    buddy._hidden = False
+    buddy._mac_finish_initial_map()
+    assert buddy.root.calls == [
+        ("overrideredirect", (True,)),
+        ("deiconify", ()),
+        *expected,
+    ]
+    assert [when for when, _callback in buddy.root.pending] == ["idle", 120]
+
+    # A startup callback queued before _tick_follow hid the buddy must not
+    # reveal it again while the Claude window is absent.
+    buddy.root.calls.clear()
+    buddy.root.pending.clear()
+    buddy._hidden = True
+    buddy._mac_finish_initial_map()
+    assert buddy.root.calls == []
+    assert buddy.root.pending == []
 
     class View:
         def __init__(self):
@@ -736,13 +835,38 @@ def test_mac_gui_recovery_contract():
     buddy._mac_redraw_surface()
     assert view.requests == [True]
 
+    patched = (sb.scripts / "buddy.py").read_text(encoding="utf-8")
+    assert "self.root.after_idle(self._mac_finish_initial_map)" in patched
+
+
+def test_tk9_safe_card_contract():
+    """Tk 9 must trade transparency for deterministic full-frame erasure."""
+    sb = Sandbox()
+    sb.apply_ok()
+    patched = (sb.scripts / "buddy.py").read_text(encoding="utf-8")
+    required = (
+        'self.root.tk.call("info", "patchlevel")',
+        "self._mac_safe_card = tk_major >= 9",
+        "# Tk 9 uses the opaque safe card",
+        "self._mac_transparent = False",
+        'self.root.configure(bg="#1e2528")',
+        'self.root.attributes("-transparent", False)',
+        'self.root.attributes("-alpha", 1.0)',
+        'canvas_bg = "systemTransparent" if self._mac_transparent else "#1e2528"',
+    )
+    for line in required:
+        assert line in patched, f"missing Tk 9 safe-card contract: {line}"
+    assert patched.index("self._mac_safe_card = tk_major >= 9") < patched.index(
+        "canvas_bg = CHROMA"
+    ), "the safe mode must be selected before the Canvas background is chosen"
+
 
 def test_previous_patchset_upgrades_and_undoes():
-    """An already-applied pre-I..N tree must upgrade without re-basing."""
+    """An already-applied pre-I..P tree must upgrade without re-basing."""
     sb = Sandbox()
     mod = sb.load()
     current_patches = list(mod.PATCHES)
-    mod.PATCHES = current_patches[:9]  # A..H/G: the previous public scaffold
+    mod.PATCHES = current_patches[:9]  # A..H/G: the previous public macOS patch set
     code, out = sb.run("--force")
     assert code == 0, out
 
@@ -751,13 +875,158 @@ def test_previous_patchset_upgrades_and_undoes():
     assert code == 0, out
     assert "patched: I native redraw bridge" in out
     assert "patched: N full-surface transparent redraw" in out
+    assert "patched: O initial map recovery" in out
+    assert "patched: P Tk 9 opaque safe card" in out
     patched = (sb.scripts / "buddy.py").read_text(encoding="utf-8")
     assert "def _mac_redraw_surface" in patched
     assert "command=self._force_topmost" in patched
+    assert "def _mac_finish_initial_map" in patched
+    assert "Tk 9 uses the opaque safe card" in patched
 
     code, out = sb.run("--undo", "--force")
     assert code == 0, out
     assert sb.stock(), "upgraded trees must still undo to the first stock baseline"
+
+
+def test_current_an_patchset_upgrades_and_undoes():
+    """The currently released A..N tree must accept O/P on a plain reapply."""
+    sb = Sandbox()
+    mod = sb.load()
+    current_patches = list(mod.PATCHES)
+    mod.PATCHES = current_patches[:-2]
+    code, out = sb.run("--force")
+    assert code == 0, out
+    before = (sb.scripts / "buddy.py").read_text(encoding="utf-8")
+    assert "def _mac_finish_initial_map" not in before
+    assert "Tk 9 uses the opaque safe card" not in before
+
+    mod.PATCHES = current_patches
+    code, out = sb.run("--force")
+    assert code == 0, out
+    assert "patched: O initial map recovery" in out
+    assert "patched: P Tk 9 opaque safe card" in out
+
+    code, out = sb.run("--undo", "--force")
+    assert code == 0, out
+    assert sb.stock(), "an upgraded A..N tree must undo to its stock baseline"
+
+
+def test_unhook_settings_write_is_atomic():
+    sb = Sandbox()
+    mod = sb.load()
+    before = sb.settings.read_bytes()
+    real_replace = mod.os.replace
+
+    def fail_settings_replace(src, dst):
+        if Path(dst) == sb.settings:
+            raise OSError("injected settings replace failure")
+        return real_replace(src, dst)
+
+    mod.os.replace = fail_settings_replace
+    try:
+        try:
+            mod._unhook_this_checkout()
+        except OSError as exc:
+            assert "injected settings replace failure" in str(exc)
+        else:
+            raise AssertionError("the injected atomic replace failure was ignored")
+    finally:
+        mod.os.replace = real_replace
+
+    assert sb.settings.read_bytes() == before
+    assert list(sb.settings.parent.glob("settings.json.bak-undo-*"))
+    assert not list(sb.settings.parent.glob(".settings.json.madomochi-*.tmp"))
+
+
+def test_unhook_concurrent_settings_change_is_not_overwritten():
+    sb = Sandbox()
+    mod = sb.load()
+    concurrent = b'{"model":"changed-by-another-process"}\n'
+    real_atomic_write = mod._atomic_write_json
+
+    def race_write(path, data, **kwargs):
+        sb.settings.write_bytes(concurrent)
+        return real_atomic_write(path, data, **kwargs)
+
+    mod._atomic_write_json = race_write
+    try:
+        try:
+            mod._unhook_this_checkout()
+        except RuntimeError as exc:
+            assert "settings changed during this operation" in str(exc)
+        else:
+            raise AssertionError("a concurrent settings update was overwritten")
+    finally:
+        mod._atomic_write_json = real_atomic_write
+
+    assert sb.settings.read_bytes() == concurrent
+    assert not list(sb.settings.parent.glob(".settings.json.madomochi-*.tmp"))
+
+
+def test_stop_script_escapes_checkout_path():
+    source = (
+        REPO / "experimental" / "macos" / "stop_buddy.sh"
+    ).read_text(encoding="utf-8")
+    assert "re.escape" in source
+    assert 'pkill -f "$here/scripts/buddy.py"' not in source
+    assert 'pgrep -f "$pattern"' in source
+    assert 'ps -p "$pid" -o ucomm=' in source
+    assert "grep -Eiq '^python" in source
+    assert 'kill "$pid"' in source
+    assert "pkill -f" not in source
+    assert "umask 077" in source
+
+
+def test_apply_process_match_has_argument_boundaries():
+    sb = Sandbox()
+    mod = sb.load()
+    pattern = mod._buddy_process_pattern()
+    escaped = mod.re.escape(str((sb.scripts / "buddy.py").resolve()))
+    assert pattern == (
+        r"(^|[[:space:]])" + escaped + r"([[:space:]]|$)"
+    )
+
+
+def test_apply_process_match_requires_python_executable():
+    sb = Sandbox()
+    mod = sb.load()
+    real_run = mod.subprocess.run
+    names = {
+        101: "/usr/bin/vim\n",
+        102: "/usr/bin/less\n",
+        103: "/usr/local/bin/python3.14\n",
+        104: "/Library/Frameworks/Python.framework/Versions/3.14/"
+             "Resources/Python.app/Contents/MacOS/Python\n",
+        105: "/opt/python/bin/python3.14t\n",
+        106: "/usr/local/bin/python-helper\n",
+    }
+
+    class Result:
+        def __init__(self, code, out=""):
+            self.returncode = code
+            self.stdout = out
+
+    def fake_run(argv, **_kwargs):
+        if argv[0] == "pgrep":
+            assert argv[1] == "-f"
+            assert argv[2] == mod._buddy_process_pattern()
+            return Result(0, "\n".join(str(pid) for pid in names) + "\n")
+        if argv[0] == "ps":
+            assert argv[1] == "-p"
+            assert argv[3:] == ["-o", "ucomm="]
+            return Result(0, names[int(argv[2])])
+        raise AssertionError(f"unexpected process probe: {argv}")
+
+    mod.subprocess.run = fake_run
+    try:
+        assert mod._buddy_process_ids() == [103, 104, 105]
+    finally:
+        mod.subprocess.run = real_run
+
+    for name in ("python", "python3", "python3.14", "Python", "python3.14t"):
+        assert mod._is_python_process_name(name), name
+    for name in ("vim", "less", "python-helper", "notpython3"):
+        assert not mod._is_python_process_name(name), name
 
 
 TESTS = [
@@ -769,6 +1038,10 @@ TESTS = [
     test_manifest_bad_values_rejected,
     test_apply_refuses_missing_source,
     test_apply_refuses_invalid_manifest,
+    test_clean_apply_refuses_stale_manifestless_backup,
+    test_clean_apply_resumes_matching_manifestless_backup,
+    test_reapply_refuses_manifestless_applied_tree_with_stale_backup,
+    test_reapply_refuses_altered_manifest_backup,
     test_reapply_preserves_edited_buddy,
     test_reapply_preserves_edited_hook_entry,
     test_legacy_apply_refuses_missing_backup,
@@ -795,7 +1068,14 @@ TESTS = [
     test_legacy_restore_failure_keeps_data,
     test_no_quit_stamp_without_target,
     test_mac_gui_recovery_contract,
+    test_tk9_safe_card_contract,
     test_previous_patchset_upgrades_and_undoes,
+    test_current_an_patchset_upgrades_and_undoes,
+    test_unhook_settings_write_is_atomic,
+    test_unhook_concurrent_settings_change_is_not_overwritten,
+    test_stop_script_escapes_checkout_path,
+    test_apply_process_match_has_argument_boundaries,
+    test_apply_process_match_requires_python_executable,
 ]
 
 

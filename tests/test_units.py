@@ -725,7 +725,7 @@ def test_session_store_priority_and_isolation(b):
 
     result = store.record_event(
         session_id="session-b", mood="alert", message="waiting",
-        tool="", event="PermissionRequest", now=base + 0.2,
+        tool="Edit", event="PermissionRequest", now=base + 0.2,
     )
     assert result.aggregate["mood"] == "alert"
 
@@ -750,6 +750,51 @@ def test_session_store_priority_and_isolation(b):
 
     # Once the alert expires, a still-live long tool becomes visible by itself.
     assert store.snapshot(now=base + 901.0)["mood"] == "work"
+
+
+def test_session_store_fast_permission_completion(b):
+    store = SessionStore(Path(_TEST_HOME) / "fast-permission.sqlite3")
+    base = time.time()
+    waiting = store.record_event(
+        session_id="same-session", mood="alert", message="waiting",
+        tool="Write", event="PermissionRequest", now=base,
+    )
+    stale_post = store.record_event(
+        session_id="same-session", mood="work", message="working",
+        tool="Write", event="PostToolUse", now=base - 0.1,
+    )
+    delayed_pre = store.record_event(
+        session_id="same-session", mood="work", message="working",
+        tool="Write", event="PreToolUse", now=base + 0.5,
+    )
+    unrelated_post = store.record_event(
+        session_id="same-session", mood="work", message="working",
+        tool="Edit", event="PostToolUse", now=base + 1.0,
+    )
+    resolved = store.record_event(
+        session_id="same-session", mood="work", message="working",
+        tool="Write", event="PostToolUse", now=base + 1.5,
+    )
+
+    assert waiting.accepted and waiting.aggregate["mood"] == "alert"
+    assert not stale_post.accepted and stale_post.aggregate["mood"] == "alert"
+    assert not delayed_pre.accepted and delayed_pre.aggregate["mood"] == "alert"
+    assert not unrelated_post.accepted and unrelated_post.aggregate["mood"] == "alert"
+    assert resolved.accepted and resolved.aggregate["mood"] == "work"
+
+    notification_store = SessionStore(
+        Path(_TEST_HOME) / "notification-alert.sqlite3"
+    )
+    notification_store.record_event(
+        session_id="same-session", mood="alert", message="waiting",
+        tool="Write", event="Notification", now=base,
+    )
+    unrelated_resolution = notification_store.record_event(
+        session_id="same-session", mood="work", message="working",
+        tool="Write", event="PostToolUse", now=base + 1.0,
+    )
+    assert not unrelated_resolution.accepted
+    assert unrelated_resolution.aggregate["mood"] == "alert"
 
 
 def test_session_store_rejects_out_of_order_same_session(b):
@@ -1402,6 +1447,7 @@ TESTS = [
     test_status_write_atomic,
     test_manual_status_reports_replace_failure,
     test_session_store_priority_and_isolation,
+    test_session_store_fast_permission_completion,
     test_session_store_rejects_out_of_order_same_session,
     test_session_store_privacy_and_signals,
     test_session_store_concurrent_writers,

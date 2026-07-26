@@ -67,6 +67,8 @@ STRAGGLER_SEC = 3.0
 LONG_TOOLS = {"Bash", "PowerShell", "Agent", "Workflow"}
 TERMINAL_MOODS = {"happy", "alert", "sleep"}
 SIGNAL_MOODS = {"happy", "error", "alert"}
+PERMISSION_REQUEST_EVENTS = {"PermissionRequest", "permission_request"}
+POST_TOOL_USE_EVENTS = {"PostToolUse", "post_tool_use"}
 
 # An unresolved alert must beat everything.  A background completion produces
 # a signal (and therefore a sound) but should not hide another active session.
@@ -389,7 +391,7 @@ class SessionStore:
         try:
             con.execute("BEGIN IMMEDIATE")
             previous = con.execute(
-                "SELECT mood, updated_at FROM sessions "
+                "SELECT mood, tool, event, updated_at FROM sessions "
                 "WHERE provider=? AND session_key=?",
                 (self.provider, key),
             ).fetchone()
@@ -397,11 +399,23 @@ class SessionStore:
                 float(previous["updated_at"]) if previous is not None else stamp
             )
             stale_timestamp = previous is not None and stamp < previous_at
+            # PermissionRequest has no tool_use_id. A same-tool PostToolUse is
+            # the narrowest available proof that a fast approved call finished.
+            resolves_recent_permission = (
+                mood == "work"
+                and previous is not None
+                and str(previous["mood"]) == "alert"
+                and str(previous["event"]) in PERMISSION_REQUEST_EVENTS
+                and event in POST_TOOL_USE_EVENTS
+                and bool(tool)
+                and str(previous["tool"]) == tool
+            )
             recent_terminal_straggler = (
                 mood == "work"
                 and previous is not None
                 and str(previous["mood"]) in TERMINAL_MOODS
                 and 0.0 <= stamp - previous_at < STRAGGLER_SEC
+                and not resolves_recent_permission
             )
             if stale_timestamp or recent_terminal_straggler:
                 row = con.execute("SELECT value FROM meta WHERE key='revision'").fetchone()

@@ -91,19 +91,6 @@
         ]
       }
     ],
-    "TaskCompleted": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "{{PYTHON}}",
-            "args": ["{{HOOK_ENTRY}}", "--hajimetwi3-buddy-hook", "TaskCompleted"],
-            "async": true,
-            "timeout": 10
-          }
-        ]
-      }
-    ],
     "Notification": [
       {
         "hooks": [

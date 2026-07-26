@@ -55,7 +55,7 @@ def test_priority_and_isolation(root: Path) -> None:
     ).aggregate["mood"] == "work"
     assert store.record_event(
         session_id="waiting", mood="alert", message="waiting",
-        tool="", event="PermissionRequest", now=base + 0.2,
+        tool="Edit", event="PermissionRequest", now=base + 0.2,
     ).aggregate["mood"] == "alert"
     assert store.record_event(
         session_id="main", mood="happy", message="done",
@@ -73,6 +73,49 @@ def test_priority_and_isolation(root: Path) -> None:
     )
     assert fresh.accepted and fresh.aggregate["mood"] == "alert"
     assert store.snapshot(now=base + 901.0)["mood"] == "work"
+
+
+def test_fast_permission_completion_is_not_a_straggler(root: Path) -> None:
+    store = SessionStore(root / "fast-permission.sqlite3")
+    base = time.time()
+    waiting = store.record_event(
+        session_id="same", mood="alert", message="waiting",
+        tool="Write", event="PermissionRequest", now=base,
+    )
+    stale_post = store.record_event(
+        session_id="same", mood="work", message="working",
+        tool="Write", event="PostToolUse", now=base - 0.1,
+    )
+    delayed_pre = store.record_event(
+        session_id="same", mood="work", message="working",
+        tool="Write", event="PreToolUse", now=base + 0.5,
+    )
+    unrelated_post = store.record_event(
+        session_id="same", mood="work", message="working",
+        tool="Edit", event="PostToolUse", now=base + 1.0,
+    )
+    resolved = store.record_event(
+        session_id="same", mood="work", message="working",
+        tool="Write", event="PostToolUse", now=base + 1.5,
+    )
+
+    assert waiting.accepted and waiting.aggregate["mood"] == "alert"
+    assert not stale_post.accepted and stale_post.aggregate["mood"] == "alert"
+    assert not delayed_pre.accepted and delayed_pre.aggregate["mood"] == "alert"
+    assert not unrelated_post.accepted and unrelated_post.aggregate["mood"] == "alert"
+    assert resolved.accepted and resolved.aggregate["mood"] == "work"
+
+    notification_store = SessionStore(root / "notification-alert.sqlite3")
+    notification_store.record_event(
+        session_id="same", mood="alert", message="waiting",
+        tool="Write", event="Notification", now=base,
+    )
+    unrelated_resolution = notification_store.record_event(
+        session_id="same", mood="work", message="working",
+        tool="Write", event="PostToolUse", now=base + 1.0,
+    )
+    assert not unrelated_resolution.accepted
+    assert unrelated_resolution.aggregate["mood"] == "alert"
 
 
 def test_same_session_out_of_order_is_rejected(root: Path) -> None:
@@ -443,6 +486,7 @@ def test_background_stop_defers_done(root: Path) -> None:
 TESTS = [
     test_private_state_permissions,
     test_priority_and_isolation,
+    test_fast_permission_completion_is_not_a_straggler,
     test_same_session_out_of_order_is_rejected,
     test_same_session_concurrent_commit_reordering,
     test_privacy_and_signals,

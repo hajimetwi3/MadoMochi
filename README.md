@@ -45,7 +45,7 @@ Code hooks.
 | `LISTEN` | prompt received (`UserPromptSubmit`) | perks up, looks around (**settles into THINK after 3s**) |
 | `THINK` | after LISTEN until the first tool / context compaction (`PreCompact`) | wandering eyes, thought dots |
 | `WORKING` | tools running (`Pre/PostToolUse`) | **types on a tiny terminal** |
-| `DONE` | turn finished (`Stop`) / background task finished (`TaskCompleted`) | leap, land, **stomp with confetti** (10s) |
+| `DONE` | turn finished (`Stop`) | leap, land, **stomp with confetti** (10s) |
 | `ERROR` | tool failed (`PostToolUseFailure`) / turn aborted (`StopFailure`) | > < eyes, staggering (6s) |
 | `WAITING` | a permission prompt (`PermissionRequest`) or an attention notification (`Notification`: idle prompt, agent-needs-input...) | urgent hops and waving. **Neglect it for a few minutes and the buddy roams your whole screen** until you deal with it, then hurries home |
 | `SLEEP` | session ended (`SessionEnd`) | sits down, zzz |
@@ -64,11 +64,12 @@ into **one Claude companion**. The visible state follows this priority:
 `WAITING` → `ERROR` → `WORKING` → `LISTEN`/`THINK` → `DONE` → `IDLE`/`SLEEP`.
 This keeps a helper session's start/end from putting an active session to
 sleep, and keeps an unresolved permission prompt visible while other sessions
-continue. When any session completes, the companion briefly shows DONE with
-its celebration (and a sound cue when enabled), then returns to the newest
+continue. When any session finishes its turn, the companion briefly shows DONE
+with its celebration (and a sound cue when enabled), then returns to the newest
 aggregate state—usually WORKING if another session is still active. WAITING
 and ERROR interrupt this brief DONE immediately. Simultaneous cues are
-coalesced so they do not pile up.
+coalesced so they do not pile up. Internal task completions are progress within
+the same turn, so they do not produce DONE or a sound.
 
 If a modern Claude Code `Stop` payload says background tasks are still in
 flight, MadoMochi keeps the preceding WORKING state and defers DONE until the

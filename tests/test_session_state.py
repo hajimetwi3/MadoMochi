@@ -168,7 +168,7 @@ def test_privacy_and_signals(root: Path) -> None:
     assert result.session_key == hashed_session_id(raw_session)
     duplicate = store.record_event(
         session_id=raw_session, mood="happy", message="done",
-        tool="", event="TaskCompleted", now=base + 0.2,
+        tool="", event="Stop", now=base + 0.2,
     )
     assert duplicate.signal_id is None
     store.record_event(
@@ -320,6 +320,73 @@ def test_hook_entry_integration(root: Path) -> None:
     assert "session-a" not in hook_log and "session-b" not in hook_log
 
 
+def test_internal_task_completion_is_ignored(root: Path) -> None:
+    hook = ROOT / "scripts" / "hook_entry.py"
+
+    def make_env(name: str) -> tuple[Path, Path, dict]:
+        runtime = root / name
+        status = runtime / "status.json"
+        db = runtime / "sessions.sqlite3"
+        env = os.environ.copy()
+        env.update({
+            "CLAUDE_BUDDY_DIR": str(runtime),
+            "CLAUDE_BUDDY_STATUS": str(status),
+            "MADOMOCHI_STATE_DB": str(db),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        })
+        return status, db, env
+
+    def invoke(env: dict, event: str, session_id: str, extra: dict | None = None) -> None:
+        payload = {
+            "hook_event_name": event,
+            "session_id": session_id,
+            **(extra or {}),
+        }
+        proc = subprocess.run(
+            [sys.executable, str(hook), "--hajimetwi3-buddy-hook", event],
+            input=json.dumps(payload), text=True, capture_output=True,
+            timeout=8, env=env,
+        )
+        assert proc.returncode == 0 and proc.stdout == "" and proc.stderr == ""
+
+    status, db, env = make_env("internal-task-runtime")
+    invoke(env, "PreToolUse", "single-session", {"tool_name": "Agent"})
+    working = status.read_bytes()
+    hook_log_before = (status.parent / "hook.log").read_bytes()
+    old_wiring = subprocess.run(
+        [sys.executable, str(hook), "--hajimetwi3-buddy-hook", "TaskCompleted"],
+        input="", text=True, capture_output=True, timeout=8, env=env,
+    )
+    assert (
+        old_wiring.returncode == 0
+        and old_wiring.stdout == ""
+        and old_wiring.stderr == ""
+    )
+    invoke(env, "TaskCompleted", "single-session")
+    assert status.read_bytes() == working
+    assert (status.parent / "hook.log").read_bytes() == hook_log_before
+    assert SessionStore(db).signals_after(0) == []
+
+    invoke(env, "Stop", "single-session")
+    assert json.loads(status.read_text(encoding="utf-8"))["mood"] == "happy"
+    signals = SessionStore(db).signals_after(0)
+    assert [row["kind"] for row in signals] == ["happy"]
+    assert [row["event"] for row in signals] == ["Stop"]
+
+    waiting_status, waiting_db, waiting_env = make_env("waiting-task-runtime")
+    invoke(waiting_env, "PermissionRequest", "waiting-session")
+    waiting = waiting_status.read_bytes()
+    invoke(waiting_env, "TaskCompleted", "waiting-session")
+    assert waiting_status.read_bytes() == waiting
+    assert [row["kind"] for row in SessionStore(waiting_db).signals_after(0)] == ["alert"]
+
+    invoke(waiting_env, "Stop", "other-session")
+    aggregate = json.loads(waiting_status.read_text(encoding="utf-8"))
+    assert aggregate["mood"] == "alert"
+    assert [
+        row["kind"] for row in SessionStore(waiting_db).signals_after(0)
+    ] == ["alert", "happy"]
+
 def test_background_stop_defers_done(root: Path) -> None:
     runtime = root / "background-runtime"
     status = runtime / "status.json"
@@ -384,6 +451,7 @@ TESTS = [
     test_status_writer_order,
     test_concurrent_hook_processes,
     test_hook_entry_integration,
+    test_internal_task_completion_is_ignored,
     test_background_stop_defers_done,
 ]
 

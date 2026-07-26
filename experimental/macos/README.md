@@ -47,9 +47,10 @@ cat: 15 skins, walk/gym/soccer demos, retro chiptune BGM, sound
 effects, a settings dialog with a full showcase demo. Poke it, too.
 
 Multiple Claude sessions are tracked separately and combined into this one
-companion. A completion from any session briefly shows DONE with its
-celebration (and a sound cue when enabled), then returns to the latest
-aggregate state. WAITING and ERROR interrupt that brief DONE immediately.
+companion. When any session finishes its turn, the companion briefly shows
+DONE with its celebration (and a sound cue when enabled), then returns to the
+latest aggregate state. WAITING and ERROR interrupt that brief DONE
+immediately. Internal task completions do not produce DONE or a sound.
 When `Stop` reports that background tasks remain, DONE is deferred until the
 final `Stop`; task descriptions and command strings are not stored or logged.
 

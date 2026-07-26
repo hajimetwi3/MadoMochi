@@ -128,7 +128,6 @@ EVENT_TO_MOOD = {
     "PostToolUseFailure": ("error", "tool failed"),
     "Stop": ("happy", "done"),
     "StopFailure": ("error", "turn failed"),
-    "TaskCompleted": ("happy", "task completed"),
     "Notification": ("alert", "waiting for you"),
     # permission prompts get their own event: the Notification hook is
     # known not to fire for them (claude-code issue #56936)
@@ -146,13 +145,18 @@ EVENT_TO_MOOD.update(
         "post_tool_use_failure": EVENT_TO_MOOD["PostToolUseFailure"],
         "stop": EVENT_TO_MOOD["Stop"],
         "stop_failure": EVENT_TO_MOOD["StopFailure"],
-        "task_completed": EVENT_TO_MOOD["TaskCompleted"],
         "notification": EVENT_TO_MOOD["Notification"],
         "permission_request": EVENT_TO_MOOD["PermissionRequest"],
         "pre_compact": EVENT_TO_MOOD["PreCompact"],
         "session_end": EVENT_TO_MOOD["SessionEnd"],
     }
 )
+
+# TaskCompleted reports internal task progress, not completion of the user's
+# turn. Keep recognizing it so wiring left by an older installation is a
+# harmless no-op until the user next runs the installer.
+IGNORED_PROGRESS_EVENTS = frozenset({"TaskCompleted", "task_completed"})
+KNOWN_HOOK_EVENTS = frozenset(EVENT_TO_MOOD).union(IGNORED_PROGRESS_EVENTS)
 
 
 # payload field names from the official hook schema - the only strings
@@ -203,7 +207,7 @@ def resolve_event(data: dict, argv: list) -> str:
     if event:
         return event
     for a in argv[1:]:
-        if a in EVENT_TO_MOOD:
+        if a in KNOWN_HOOK_EVENTS:
             return str(a)
     return ""
 
@@ -367,6 +371,9 @@ def main() -> int:
                 log(f"bad_json {e!r} len={len(raw)}")
 
         event = resolve_event(data, sys.argv)
+        if event in IGNORED_PROGRESS_EVENTS:
+            return 0
+
         tool = _bounded_field(data.get("tool_name") or data.get("toolName"))
         session_id = str(data.get("session_id") or "")
 

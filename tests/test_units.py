@@ -490,6 +490,13 @@ def test_hook_scrub(b):
             "Notification": [  # a pre-marker install of THIS repo (exact path)
                 {"hooks": [{"command": "pythonw", "args": [str(ih.HOOK_SCRIPT)]}]},
             ],
+            "TaskCompleted": [  # removed from new installs, scrubbed on upgrade
+                {"hooks": [{
+                    "command": "pythonw",
+                    "args": [str(ih.HOOK_SCRIPT), "--hajimetwi3-buddy-hook",
+                             "TaskCompleted"],
+                }]},
+            ],
         },
         "model": "keep-me",
     }
@@ -497,6 +504,7 @@ def test_hook_scrub(b):
     assert settings["model"] == "keep-me"           # unrelated keys untouched
     assert "SessionStart" not in settings["hooks"]  # template wiring removed
     assert "Notification" not in settings["hooks"]  # legacy exact-path removed
+    assert "TaskCompleted" not in settings["hooks"]  # retired wiring removed
     remaining = settings["hooks"]["Stop"][0]["hooks"]
     assert len(remaining) == 4  # only the marked entry scrubbed, foreign kept
     assert {"command": "pythonw", "args": ["C:/other-product/hook_entry.py"]} in remaining
@@ -792,7 +800,7 @@ def test_session_store_privacy_and_signals(b):
     assert first.aggregate["session"] == first.session_key[:12]
     duplicate = store.record_event(
         session_id=raw_session, mood="happy", message="done",
-        tool="", event="TaskCompleted", now=base + 0.2,
+        tool="", event="Stop", now=base + 0.2,
     )
     assert duplicate.signal_id is None
     store.record_event(
@@ -935,6 +943,31 @@ def test_multisession_done_flash_urgent_preemption(b):
     }, signal_backed=True)
     assert b.mood == "error"
     assert b._session_done_until == 0.0
+
+
+def test_multisession_waiting_keeps_real_done_sound(b):
+    old_born = b._born
+    old_play_se = b.bgm.play_se
+    calls = []
+    try:
+        b._born = time.time() - 5.0
+        b.bgm.play_se = calls.append
+        b._aggregate_mood = "alert"
+        b._set_mood("alert", signal_backed=True)
+
+        b._consume_session_signals([{
+            "id": b._last_signal_id + 1,
+            "kind": "happy",
+            "session_key": "finished-other-session",
+            "event": "Stop",
+        }])
+
+        assert b.mood == "alert"
+        assert b._session_done_until == 0.0
+        assert calls == ["happy"]
+    finally:
+        b._born = old_born
+        b.bgm.play_se = old_play_se
 
 
 def test_multisession_done_flash_stays_done_when_all_complete(b):
@@ -1129,6 +1162,9 @@ def test_event_argv_fallback(b):
     import hook_entry as he
     argv = ["hook_entry.py", "--hajimetwi3-buddy-hook", "Stop"]
     assert he.resolve_event({}, argv) == "Stop"  # empty stdin -> wiring name
+    assert he.resolve_event(
+        {}, ["hook_entry.py", "--hajimetwi3-buddy-hook", "TaskCompleted"]
+    ) == "TaskCompleted"  # old wiring remains a recognized no-op
     assert he.resolve_event({"hook_event_name": "PreToolUse"}, argv) == "PreToolUse"
     assert he.resolve_event({}, ["hook_entry.py", "--hajimetwi3-buddy-hook"]) == ""
     assert he.resolve_event({}, ["hook_entry.py", "NotAnEvent"]) == ""
@@ -1143,6 +1179,9 @@ def test_template_wiring(b):
          / "install.settings" / "settings.template.json").read_text(encoding="utf-8"))
     import hook_entry as he
     assert "PermissionRequest" in tpl["hooks"], "permission prompts need their own event"
+    assert "TaskCompleted" not in tpl["hooks"], "internal tasks are not turn completion"
+    assert "TaskCompleted" not in he.EVENT_TO_MOOD
+    assert "TaskCompleted" in he.IGNORED_PROGRESS_EVENTS
     for event, groups in tpl["hooks"].items():
         assert event in he.EVENT_TO_MOOD, f"template wires unknown event {event}"
         for g in groups:
@@ -1369,6 +1408,7 @@ TESTS = [
     test_multisession_signal_delivery,
     test_multisession_done_flash_restores_latest_work,
     test_multisession_done_flash_urgent_preemption,
+    test_multisession_waiting_keeps_real_done_sound,
     test_multisession_done_flash_stays_done_when_all_complete,
     test_multisession_done_flash_coalesces_and_restarts,
     test_multisession_alert_timing,
